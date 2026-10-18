@@ -15,6 +15,9 @@ minetest = {
  get_player_by_name = function() return nil end,
  get_connected_players = function() return {} end,
 }
+-- Контроллер камеры проверяется отдельно в tests/camera.lua.
+minetest.get_modpath = function() return 'mods/lun' end
+minetest.register_on_leaveplayer = function() end
 dofile('mods/lun/init.lua')
 callbacks.mapgen()
 local count = 0

@@ -129,3 +129,6 @@ engine.register_globalstep(function(dtime)
 		end
 	end
 end)
+
+-- Независимый контроллер принудительной камеры.
+dofile(engine.get_modpath("lun") .. "/camera.lua")
