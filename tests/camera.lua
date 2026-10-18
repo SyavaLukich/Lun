@@ -7,7 +7,7 @@ local last_offset=nil
 local offset_history={}
 local function node_at(p) for _,contains in ipairs(obstacles) do if contains(p) then return {name='stone'} end end return {name='air'} end
 local player={get_player_name=function() return 'builder' end, get_pos=function() return {x=0,y=0,z=0} end, get_properties=function() return {eye_height=1.625} end, get_look_horizontal=function() return 0 end, get_look_dir=function() return {x=0,y=0,z=1} end,
- set_eye_offset=function(_,first,third) last_offset={x=third.x,y=third.y} table.insert(offset_history,{x=third.x,y=third.y}) assert(third.x>=0 and third.x<=5 and third.y>=0 and third.y<=3,'offset '..third.x..','..third.y) assert(first.x==0 and first.y==0 and first.z==0) end,
+ set_eye_offset=function(_,first,third) last_offset={x=third.x,y=third.y} table.insert(offset_history,{x=third.x,y=third.y}) assert(third.x>=0 and third.x<=5 and third.y>=0 and third.y<=2,'offset '..third.x..','..third.y) assert(first.x==0 and first.y==0 and first.z==0) end,
  set_camera=function(_,params) mode=params.mode; calls=calls+1 end}
 minetest={registered_nodes={air={walkable=false},stone={walkable=true}}, get_node_or_nil=node_at,
  raycast=function(a,b) local hit for i=0,100 do local p=vector.add(a,vector.multiply(vector.subtract(b,a),i/100)) if node_at(p).name=='stone' then hit={type='node',under=p}; break end end return function() local r=hit; hit=nil; return r end end,
@@ -27,12 +27,12 @@ local function wait_until_third()
  assert(mode=='first','Still first during hysteresis/exit start (0.9)')
  cb.step(0.7) -- выезд 0.6 завершается
  assert(mode=='third','Back to third after smooth exit')
- assert(last_offset.x==5 and last_offset.y==3,'Back to 5,3')
+ assert(last_offset.x==5 and last_offset.y==2,'Back to 5,2')
 end
 
 cb.join(player)
 assert(mode=='third','Open space third')
-assert(last_offset.x==5 and last_offset.y==3,'Initial 5,3')
+assert(last_offset.x==5 and last_offset.y==2,'Initial 5,2')
 cb.step(1)
 assert(calls==1,'No resend')
 
@@ -125,7 +125,7 @@ cb.step(0.1) -- start exit, should be intermediate
 assert(#offset_history>0,'Smooth back each frame')
 assert(offset_history[1].x>0 and offset_history[1].x<5,'Smooth back intermediate')
 cb.step(0.6)
-assert(last_offset.x==5 and last_offset.y==3,'Smooth back finished')
+assert(last_offset.x==5 and last_offset.y==2,'Smooth back finished')
 obstacles={}
 cb.step(1)
 local orig=minetest.get_node_or_nil
