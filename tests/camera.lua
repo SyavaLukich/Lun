@@ -54,112 +54,131 @@ assert(last_offset.x==5 and last_offset.y==3, 'Initial offset 5,3')
 cb.step(1)
 assert(calls==1, 'Do not resend unchanged mode')
 
--- 2. Низкий потолок (2 пустых блока) -> first
+-- Низкий потолок (2 пустых) -> first (замкнутое по вертикали)
 obstacles={function(p) return p.y > 2.3 end}
 cb.step(0.1)
-assert(mode=='first', 'Low ceiling (2 empty blocks) -> first')
+assert(mode=='first', 'Low ceiling (2 empty) -> first (enclosed vertical)')
 obstacles={}
 cb.step(0.4)
-assert(mode=='first', 'Hysteresis: wait before returning')
-assert(last_offset.x < 5 and last_offset.x >= 0, 'Smooth transition: interpolating')
+assert(mode=='first', 'Hysteresis')
+assert(last_offset.x < 5, 'Smooth interpolating')
 cb.step(0.5)
-assert(mode=='third', 'Return to third person after clear interval')
+assert(mode=='third', 'Return after clear')
 obstacles={}
 cb.step(1)
 
--- 3. Высокий потолок 3 пустых блока -> third
+-- Высокий потолок 3 пустых -> third
 obstacles={function(p) return p.y > 3.5 end}
 cb.step(0.1)
-assert(mode=='third', 'High ceiling (3 empty) stays third')
+assert(mode=='third', 'High ceiling 3 empty -> third')
 obstacles={}
 cb.step(1)
 
--- 4. 2 пустых блока: потолок 3 -> first
+-- 2 пустых между полом и потолком -> first
 obstacles={function(p) return p.y >= 3 and p.y < 4 end}
 cb.step(0.1)
 assert(mode=='first', '2 empty blocks -> first')
 obstacles={}
 cb.step(1)
 
--- 5. 3 пустых блока: потолок 4 -> third
+-- 3 пустых -> third
 obstacles={function(p) return p.y >= 4 and p.y < 5 end}
 cb.step(0.1)
-assert(mode=='third', '3 empty blocks -> third')
+assert(mode=='third', '3 empty -> third')
 obstacles={}
 cb.step(1)
 
--- 6. Проверка X>=2 с высотой >1: стена 2 блока высотой (y 1..3) -> first
+-- Замкнутое помещение: 2 высокие стены по X (коридор) -> first
+obstacles={
+ function(p) return p.x >= 2 and p.x < 3 and p.y >= 1 and p.y < 3 end,
+ function(p) return p.x <= -2 and p.x > -3 and p.y >= 1 and p.y < 3 end,
+}
+cb.step(0.1)
+assert(mode=='first', 'Enclosed: 2 tall walls X+2/X-2 -> first (corridor)')
+obstacles={}
+cb.step(1)
+
+-- Замкнутое: стены X+2 и Z+2 (угол комнаты) -> first
+obstacles={
+ function(p) return p.x >= 2 and p.x < 3 and p.y >= 1 and p.y < 3 end,
+ function(p) return p.z >= 2 and p.z < 3 and p.y >= 1 and p.y < 3 end,
+}
+cb.step(0.1)
+assert(mode=='first', 'Enclosed: X+2 & Z+2 corner -> first')
+obstacles={}
+cb.step(1)
+
+-- Одиночная высокая стена X+2 -> НЕ замкнутое -> third (не переключать в открытом поле)
 obstacles={function(p) return p.x >= 2 and p.x < 3 and p.y >= 1 and p.y < 3 end}
 cb.step(0.1)
-assert(mode=='first', 'Wall at x>=2 height>1 -> first')
+assert(mode=='third', 'Single tall wall X+2 alone -> third (not enclosed)')
 obstacles={}
 cb.step(1)
 
--- 7. Проверка Z>=2 с высотой >1: стена 2 блока высотой -> first
+-- Одиночная высокая стена Z+2 -> third
 obstacles={function(p) return p.z >= 2 and p.z < 3 and p.y >= 1 and p.y < 3 end}
 cb.step(0.1)
-assert(mode=='first', 'Wall at z>=2 height>1 -> first')
+assert(mode=='third', 'Single tall wall Z+2 alone -> third')
 obstacles={}
 cb.step(1)
 
--- 8. Стена X>=2 но высотой 1 блок (только y 1..2) -> НЕ должна триггерить (важно: влияет только >1)
-obstacles={function(p) return p.x >= 2 and p.x < 3 and p.y >= 1 and p.y < 2 end}
+-- Низкая стена высотой 1 блок (только y 1..2) даже 2 стены не должны триггерить
+obstacles={
+ function(p) return p.x >= 2 and p.x < 3 and p.y >= 1 and p.y < 2 end,
+ function(p) return p.x <= -2 and p.x > -3 and p.y >= 1 and p.y < 2 end,
+}
 cb.step(0.1)
-assert(mode=='third', 'Wall at x>=2 height=1 -> third (no effect)')
+assert(mode=='third', 'Low walls height=1 even with 2 walls -> third (height>1 required)')
 obstacles={}
 cb.step(1)
 
--- 9. Стена Z>=2 высотой 1 -> не триггерит
-obstacles={function(p) return p.z >= 2 and p.z < 3 and p.y >= 1 and p.y < 2 end}
+-- Широкая стена на 0.85 с двух сторон — узкий коридор, считается замкнутым, если высокие стены
+obstacles={
+ function(p) return p.x > 0.85 and p.x < 1.5 and p.y >= 1 and p.y < 3 end,
+ function(p) return p.x < -0.85 and p.x > -1.5 and p.y >= 1 and p.y < 3 end,
+}
 cb.step(0.1)
-assert(mode=='third', 'Wall at z>=2 height=1 -> third (no effect)')
+assert(mode=='first', 'Narrow corridor 0.85 enclosed -> first')
 obstacles={}
 cb.step(1)
 
--- 10. Узкий проход на 0.85 не триггерит (только x>=2)
-obstacles={function(p) return math.abs(p.x) > 0.85 and math.abs(p.x) < 1.5 end}
-cb.step(0.1)
-assert(mode=='third', 'Narrow side walls at 0.85 alone no longer trigger')
-obstacles={}
-cb.step(1)
-
--- 11. Плавный переход
+-- Плавный переход
 obstacles={function(p) return p.y >= 3 and p.y < 4 end}
 cb.step(0.1)
-assert(mode=='first', 'Trigger first for smooth test')
+assert(mode=='first', 'Trigger first for smooth')
 offset_history = {}
 cb.step(0.05)
 assert(#offset_history > 0, 'Smooth: set_eye_offset each frame')
 local mid = offset_history[1]
-assert(mid.x < 5 and mid.x > 0 or mid.y < 3 and mid.y > 0, 'Smooth: intermediate offset')
+assert(mid.x < 5 and mid.x > 0 or mid.y < 3 and mid.y > 0, 'Smooth intermediate')
 cb.step(0.1)
 cb.step(0.1)
 cb.step(0.1)
 cb.step(0.1)
-assert(last_offset.x == 0 and last_offset.y == 0, 'Smooth finish at 0,0')
+assert(last_offset.x == 0 and last_offset.y == 0, 'Smooth finish 0,0')
 obstacles={}
 cb.step(0.4)
-assert(mode=='first', 'Still first during hysteresis')
+assert(mode=='first', 'Hysteresis')
 cb.step(0.5)
-assert(mode=='third', 'Back to third after hysteresis')
+assert(mode=='third', 'Back to third')
 offset_history = {}
 cb.step(0.05)
 assert(offset_history[1].x > 0 and offset_history[1].x < 5, 'Smooth back intermediate')
 cb.step(0.4)
-assert(last_offset.x == 5 and last_offset.y == 3, 'Smooth back finished at 5,3')
+assert(last_offset.x == 5 and last_offset.y == 3, 'Smooth back finished 5,3')
 
 obstacles={}
 cb.step(1)
 local original=minetest.get_node_or_nil
 minetest.get_node_or_nil=function() return nil end
 cb.step(0.1)
-assert(mode=='first', 'Unloaded area (ignore) -> first')
+assert(mode=='first', 'Unloaded -> first')
 minetest.get_node_or_nil=original
 cb.leave(player)
 local before=calls
 cb.step(1)
-assert(calls==before, 'Forget disconnected player state')
+assert(calls==before, 'Forget disconnected')
 protocol=47
 cb.join(player)
-assert(kicked, 'Reject clients without forced-camera support')
-print('OK: camera offsets, modes, height x/z (height>1) checks, hysteresis, smooth transition, cleanup, compatibility')
+assert(kicked, 'Reject old client')
+print('OK: enclosed room algorithm, height>1, hysteresis, smooth, cleanup')

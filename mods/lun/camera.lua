@@ -29,10 +29,20 @@ local function lerp_offset(a, b, t)
 end
 
 local function tall_wall_at(pos, dx, dz)
-	-- Проверяем стену высотой больше одного блока: нужны минимум 2 солидных блока по вертикали
+	-- Стена высотой больше одного блока: минимум 2 солидных блока по вертикали
 	local p1 = {x = pos.x + dx, y = pos.y + 1, z = pos.z + dz}
 	local p2 = {x = pos.x + dx, y = pos.y + 2, z = pos.z + dz}
 	return blocked(p1) and blocked(p2)
+end
+
+local function has_tall_wall_dir(pos, dx, dz)
+	-- Проверяем наличие высокой стены на расстоянии 1..2 блока в направлении dx,dz
+	for d = 1, 2 do
+		if tall_wall_at(pos, dx * d, dz * d) then
+			return true
+		end
+	end
+	return false
 end
 
 local function cramped(player)
@@ -47,16 +57,23 @@ local function cramped(player)
 		empty = empty + 1
 	end
 	if empty <= 2 then
-		return true
+		return true -- низкий потолок — замкнутое по вертикали
 	end
-	-- 2) Проверка по X: стена на расстоянии >=2 блока по X, высотой больше одного блока
-	if tall_wall_at(pos, 2, 0) or tall_wall_at(pos, -2, 0) then
-		return true
+
+	-- 2) Проверка замкнутого помещения по горизонтали:
+	-- Считаем высокие стены (высота >1) в радиусе 2 блока по 4 направлениям.
+	-- Замкнутым считается пространство с минимум 2 стенами (коридор) или 3-4 (комната).
+	-- Одиночная стена в открытом поле (1 стена) — не считается замкнутым.
+	local walls = 0
+	if has_tall_wall_dir(pos, 1, 0) then walls = walls + 1 end -- +X
+	if has_tall_wall_dir(pos, -1, 0) then walls = walls + 1 end -- -X
+	if has_tall_wall_dir(pos, 0, 1) then walls = walls + 1 end -- +Z
+	if has_tall_wall_dir(pos, 0, -1) then walls = walls + 1 end -- -Z
+
+	if walls >= 2 then
+		return true -- замкнутое помещение: коридор/комната
 	end
-	-- 3) Проверка по Z: стена на расстоянии >=2 блока по Z, высотой больше одного блока
-	if tall_wall_at(pos, 0, 2) or tall_wall_at(pos, 0, -2) then
-		return true
-	end
+
 	return false
 end
 
@@ -85,11 +102,10 @@ engine.register_on_joinplayer(function(player)
 		mode = nil,
 		current = {x = target.x, y = target.y, z = target.z},
 		target = {x = target.x, y = target.y, z = target.z},
-		transition = 1, -- 1 = завершён, 0..1 = в процессе
+		transition = 1,
 		transition_elapsed = 0,
 	}
 	states[name] = state
-	-- Сразу ставим нужный оффсет без плавности на спавне
 	player:set_eye_offset({x = 0, y = 0, z = 0}, target, target)
 	set_mode(player, state, init_first and "first" or "third")
 end)
@@ -101,13 +117,12 @@ end)
 local elapsed = 0
 engine.register_globalstep(function(dtime)
 	elapsed = elapsed + dtime
-	-- Плавная интерполяция оффсета каждый кадр, независимо от interval
+	-- Плавная интерполяция оффсета каждый кадр
 	for _, player in ipairs(engine.get_connected_players()) do
 		local state = states[player:get_player_name()]
 		if state and state.transition < 1 then
 			state.transition_elapsed = state.transition_elapsed + dtime
 			local t = math.min(state.transition_elapsed / transition_duration, 1)
-			-- ease-out (кубический) для более мягкого завершения
 			local eased = 1 - (1 - t) * (1 - t) * (1 - t)
 			if state.start then
 				state.current = lerp_offset(state.start, state.target, eased)
@@ -137,11 +152,9 @@ engine.register_globalstep(function(dtime)
 			local should_cramped = cramped(player)
 			local desired_mode = should_cramped and "first" or "third"
 			local desired_offset = should_cramped and offset_first or offset_third
-			-- Гистерезис: возврат в третье лицо только после 0.8 сек свободы
 			if should_cramped then
 				state.clear_time = 0
 				if state.mode ~= desired_mode then
-					-- Начинаем плавный переход к первому лицу
 					state.start = {x = state.current.x, y = state.current.y, z = state.current.z}
 					state.target = desired_offset
 					state.transition = 0
@@ -152,7 +165,6 @@ engine.register_globalstep(function(dtime)
 				state.clear_time = state.clear_time + delta
 				if state.clear_time >= return_delay then
 					if state.mode ~= desired_mode then
-						-- Плавный переход обратно к третьему лицу
 						state.start = {x = state.current.x, y = state.current.y, z = state.current.z}
 						state.target = desired_offset
 						state.transition = 0
