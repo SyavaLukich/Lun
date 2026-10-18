@@ -28,6 +28,13 @@ local function lerp_offset(a, b, t)
 	}
 end
 
+local function tall_wall_at(pos, dx, dz)
+	-- Проверяем стену высотой больше одного блока: нужны минимум 2 солидных блока по вертикали
+	local p1 = {x = pos.x + dx, y = pos.y + 1, z = pos.z + dz}
+	local p2 = {x = pos.x + dx, y = pos.y + 2, z = pos.z + dz}
+	return blocked(p1) and blocked(p2)
+end
+
 local function cramped(player)
 	local pos = player:get_pos()
 	-- 1) Проверка высоты: 2 пустых блока между полом и потолком — тесно
@@ -42,12 +49,12 @@ local function cramped(player)
 	if empty <= 2 then
 		return true
 	end
-	-- 2) Проверка по X: стена на расстоянии >=2 блока по X
-	if blocked({x = pos.x + 2, y = pos.y + 1, z = pos.z}) or blocked({x = pos.x - 2, y = pos.y + 1, z = pos.z}) then
+	-- 2) Проверка по X: стена на расстоянии >=2 блока по X, высотой больше одного блока
+	if tall_wall_at(pos, 2, 0) or tall_wall_at(pos, -2, 0) then
 		return true
 	end
-	-- 3) Проверка по Z: стена на расстоянии >=2 блока по Z
-	if blocked({x = pos.x, y = pos.y + 1, z = pos.z + 2}) or blocked({x = pos.x, y = pos.y + 1, z = pos.z - 2}) then
+	-- 3) Проверка по Z: стена на расстоянии >=2 блока по Z, высотой больше одного блока
+	if tall_wall_at(pos, 0, 2) or tall_wall_at(pos, 0, -2) then
 		return true
 	end
 	return false
