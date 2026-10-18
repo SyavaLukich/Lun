@@ -2,9 +2,8 @@
 local engine = minetest
 local states = {}
 local interval = 0.1
-local return_delay = 0.8
-local transition_duration = 0.6 -- плавный въезд в голову как на демо (0.58с, 35к 60fps)
-local offset_third = {x = 5, y = 2, z = 0} -- понижена: 0.5 вправо, 0.2 вверх (было 0.8)
+local return_delay = 0.25 -- быстрый возврат из первого в третье (было 0.8)
+local offset_third = {x = 5, y = 2, z = 0} -- понижена: 0.5 вправо, 0.2 вверх
 local offset_first = {x = 0, y = 0, z = 0}
 
 local function blocked(pos)
@@ -12,19 +11,6 @@ local function blocked(pos)
 	if not node or node.name == "ignore" then return true end
 	local def = engine.registered_nodes[node.name]
 	return not def or def.walkable ~= false
-end
-
-local function lerp(a,b,t) return a + (b-a)*t end
-local function lerp_offset(a,b,t)
-	return {x=lerp(a.x,b.x,t), y=lerp(a.y,b.y,t), z=lerp(a.z,b.z,t)}
-end
-
-local function easeInOutCubic(t)
-	if t < 0.5 then return 4*t*t*t
-	else
-		local f = -2*t + 2
-		return 1 - (f*f*f)/2
-	end
 end
 
 local function obstructed(from, to)
@@ -56,7 +42,6 @@ end
 
 local function cramped(player)
 	local pos=player:get_pos()
-	-- Вертикаль: 2 пустых -> тесно
 	local empty=0
 	for dy=1,4 do
 		local p={x=pos.x,y=pos.y+dy,z=pos.z}
@@ -64,14 +49,12 @@ local function cramped(player)
 		empty=empty+1
 	end
 	if empty <=2 then return true end
-	-- Горизонталь: >=2 высоких стен (высота>1) в радиусе 2 по X/Z
 	local walls=0
 	if has_tall_wall_dir(pos,1,0) then walls=walls+1 end
 	if has_tall_wall_dir(pos,-1,0) then walls=walls+1 end
 	if has_tall_wall_dir(pos,0,1) then walls=walls+1 end
 	if has_tall_wall_dir(pos,0,-1) then walls=walls+1 end
 	if walls>=2 then return true end
-	-- Резерв: классические рейкасты камеры (ловят узкие коридоры и диагональ)
 	local props=player:get_properties()
 	local eye=vector.add(pos,{x=0,y=props.eye_height or 1.625,z=0})
 	local yaw=player:get_look_horizontal()
@@ -90,9 +73,6 @@ local function set_mode(player,state,mode)
 		state.mode=mode
 	end
 end
-local function apply_eye_offset(player,state)
-	player:set_eye_offset({x=0,y=0,z=0}, state.current, state.current)
-end
 
 engine.register_on_joinplayer(function(player)
 	local name=player:get_player_name()
@@ -102,12 +82,7 @@ engine.register_on_joinplayer(function(player)
 	end
 	local init_first=cramped(player)
 	local target=init_first and offset_first or offset_third
-	local state={
-		clear_time=0, mode=nil,
-		current={x=target.x,y=target.y,z=target.z},
-		target={x=target.x,y=target.y,z=target.z},
-		transition=1, transition_elapsed=0, pending_mode=nil, start=nil
-	}
+	local state={clear_time=0, mode=nil}
 	states[name]=state
 	player:set_eye_offset({x=0,y=0,z=0},target,target)
 	set_mode(player,state,init_first and "first" or "third")
@@ -118,63 +93,24 @@ engine.register_on_leaveplayer(function(player) states[player:get_player_name()]
 local elapsed=0
 engine.register_globalstep(function(dtime)
 	elapsed=elapsed+dtime
-	-- Плавная интерполяция каждый кадр (позволяет прерывать предыдущий переход)
-	for _,player in ipairs(engine.get_connected_players()) do
-		local state=states[player:get_player_name()]
-		if state and state.transition <1 then
-			state.transition_elapsed=state.transition_elapsed+dtime
-			local t=math.min(state.transition_elapsed/transition_duration,1)
-			local eased=easeInOutCubic(t)
-			state.current=lerp_offset(state.start,state.target,eased)
-			apply_eye_offset(player,state)
-			if t>=1 then
-				state.transition=1
-				state.current={x=state.target.x,y=state.target.y,z=state.target.z}
-				state.start=nil
-				apply_eye_offset(player,state)
-				if state.pending_mode then
-					set_mode(player,state,state.pending_mode)
-					state.pending_mode=nil
-				end
-			else
-				state.transition=t
-			end
-		end
-	end
 	if elapsed < interval then return end
 	local delta=elapsed
 	elapsed=0
 	for _,player in ipairs(engine.get_connected_players()) do
 		local state=states[player:get_player_name()]
 		if state then
-			local should_cramped=cramped(player)
-			local desired_mode=should_cramped and "first" or "third"
-			local desired_offset=should_cramped and offset_first or offset_third
-			-- Если цель уже совпадает с текущей целью - ничего не делаем
-			if state.target.x==desired_offset.x and state.target.y==desired_offset.y then
-				if should_cramped then state.clear_time=0 else
-					state.clear_time=state.clear_time+delta
+			if cramped(player) then
+				state.clear_time=0
+				if state.mode ~= "first" then
+					player:set_eye_offset({x=0,y=0,z=0},offset_first,offset_first)
+					set_mode(player,state,"first")
 				end
 			else
-				if should_cramped then
-					state.clear_time=0
-					if state.mode ~= desired_mode or state.pending_mode ~= desired_mode then
-						state.start={x=state.current.x,y=state.current.y,z=state.current.z}
-						state.target=desired_offset
-						state.transition=0
-						state.transition_elapsed=0
-						state.pending_mode=desired_mode
-					end
-				else
-					state.clear_time=state.clear_time+delta
-					if state.clear_time >= return_delay then
-						if state.mode ~= desired_mode or state.pending_mode ~= desired_mode then
-							state.start={x=state.current.x,y=state.current.y,z=state.current.z}
-							state.target=desired_offset
-							state.transition=0
-							state.transition_elapsed=0
-							state.pending_mode=desired_mode
-						end
+				state.clear_time=state.clear_time+delta
+				if state.clear_time >= return_delay then
+					if state.mode ~= "third" then
+						player:set_eye_offset({x=0,y=0,z=0},offset_third,offset_third)
+						set_mode(player,state,"third")
 					end
 				end
 			end
