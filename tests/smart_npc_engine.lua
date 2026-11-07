@@ -133,6 +133,37 @@ run("повтор id при загрузке не вытесняет жител�
 	smart_npc.active[old_id] = second
 end)
 
+run("поиск по группе блоков", function()
+	stub.set_node(10, 1, 10, "default:tree")
+	local found = minetest.find_node_near({ x = 9, y = 1, z = 10 }, 4, { "group:tree" }, true)
+	check(found ~= nil, "дерево найдено по группе")
+	check_equal(found.x, 10, "найдена нужная координата x")
+	check_equal(found.y, 1, "найдена нужная координата y")
+	check_equal(found.z, 10, "найдена нужная координата z")
+	stub.set_node(10, 1, 10, "air")
+end)
+
+run("путь обходит стену", function()
+	for z = -3, 3 do
+		stub.set_node(3, 1, z, "default:stone")
+		stub.set_node(3, 2, z, "default:stone")
+	end
+	local path = minetest.find_path({ x = 0.5, y = 1, z = 0.5 },
+		{ x = 6.5, y = 1, z = 0.5 }, 12, 1, 2)
+	check(path ~= nil and #path >= 3, "путь найден и он не прямой")
+	if path then
+		for _, point in ipairs(path) do
+			check(not (math.floor(point.x) == 3 and math.abs(point.z) <= 3),
+				"путь не проходит сквозь стену")
+		end
+		check(path[1].x == 0 and path[#path].x == 6, "путь соединяет начало и цель")
+	end
+	for z = -3, 3 do
+		stub.set_node(3, 1, z, "air")
+		stub.set_node(3, 2, z, "air")
+	end
+end)
+
 run("длительная жизнь на платформе", function()
 	-- Немного еды рядом, чтобы жители находили её и ели.
 	stub.set_node(4, 1, 2, "default:apple")
@@ -216,6 +247,21 @@ run("панель: все вкладки", function()
 	check(stub.formspecs[#stub.formspecs].formspec:find("npc_portrait_10.png", 1, true) ~= nil,
 		"нулевой скин показывается как десятый портрет")
 	entity._brain.skin = skin
+
+	-- Кнопки труда на вкладке состояния ставят цель.
+	local work_brain = entity._brain
+	local saved_goal = work_brain.goal
+	work_brain.paused = false
+	entity._action = nil
+	UI.show(player, entity, 1, "")
+	stub.receive_fields(player, "smart_npc:panel", { act_build = true })
+	check(work_brain.goal ~= nil and work_brain.goal.action == "build", "кнопка «Строить» ставит цель")
+	work_brain.goal = nil
+	stub.receive_fields(player, "smart_npc:panel", { act_chop = true })
+	check(work_brain.goal ~= nil and work_brain.goal.action == "chop", "кнопка «Рубить» ставит цель")
+	work_brain.goal = saved_goal
+	entity._action = nil
+	W.stop(entity)
 end)
 
 run("разговор через панель", function()
@@ -352,6 +398,96 @@ run("все действия запускаются", function()
 	end
 	check_equal(#failed, 0, "ошибки действий: " .. table.concat(failed, " | "))
 	player:set_pos(old_pos)
+end)
+
+run("житель рубит дерево", function()
+	local entity = first_entity()
+	local brain = entity._brain
+	local old_pos = entity.object:get_pos()
+	local old_home = brain.knowledge.home
+	local old_wood, old_stat = brain.carry.wood, brain.stats.wood
+	entity.object:set_pos({ x = 16.5, y = 1, z = 15.5 })
+	brain.knowledge.home = { x = 16.5, y = 1, z = 15.5 }
+	brain.paused = false
+	brain.carry.wood = 0
+	brain.stats.wood = 0
+	entity._action = nil
+	for y = 1, 4 do stub.set_node(17, y, 15, "default:tree") end
+	brain.last_context = W.scan(entity, brain, W.now())
+	brain.goal = {
+		desire_id = "test:chop",
+		action = "chop",
+		title = "Заготовить дерево",
+		target_pos = { x = 17, y = 1, z = 15 },
+		started = W.now(),
+		special = true,
+	}
+	for _ = 1, 60 do smart_npc.actions.tick(entity, 0.2) end
+	check_equal(stub.get_node_name(17, 1, 15), "air", "нижний блок дерева срублен")
+	check_equal(stub.get_node_name(17, 4, 15), "air", "верхний блок дерева срублен")
+	check((brain.carry.wood or 0) >= 4, "дерево попало в запас")
+	check((brain.stats.wood or 0) >= 4, "счётчик дерева вырос")
+	brain.goal = nil
+	entity._action = nil
+	W.stop(entity)
+	entity.object:set_pos(old_pos)
+	brain.knowledge.home = old_home
+	brain.carry.wood, brain.stats.wood = old_wood, old_stat
+	for y = 1, 4 do stub.set_node(17, y, 15, "air") end
+end)
+
+run("житель строит навес", function()
+	local entity = first_entity()
+	local brain = entity._brain
+	local old_pos = entity.object:get_pos()
+	local old_home = brain.knowledge.home
+	local old_wood, old_builds = brain.carry.wood, brain.stats.builds
+	local old_creative = minetest.is_creative_enabled
+	minetest.is_creative_enabled = function() return false end
+	entity.object:set_pos({ x = 20.5, y = 1, z = 20.5 })
+	brain.knowledge.home = { x = 20.5, y = 1, z = 20.5 }
+	brain.paused = false
+	brain.carry.wood = 40
+	brain.carry.stone = 0
+	brain.stats.builds = 0
+	brain.flags.shelter_built = nil
+	entity._action = nil
+	brain.last_context = W.scan(entity, brain, W.now())
+	brain.goal = {
+		desire_id = "test:build",
+		action = "build",
+		title = "Построить навес",
+		started = W.now(),
+		special = true,
+	}
+	for _ = 1, 120 do smart_npc.actions.tick(entity, 0.2) end
+	local built = 0
+	for x = 17, 23 do
+		for y = 1, 3 do
+			for z = 17, 23 do
+				if stub.get_node_name(x, y, z) == "default:wood" then built = built + 1 end
+			end
+		end
+	end
+	check(built >= 20, "навес собран из блоков: " .. built)
+	check_equal(brain.stats.builds, 1, "постройка учтена в статистике")
+	check((brain.carry.wood or 0) < 40, "материалы израсходованы")
+	brain.goal = nil
+	entity._action = nil
+	W.stop(entity)
+	entity.object:set_pos(old_pos)
+	brain.knowledge.home = old_home
+	brain.carry.wood, brain.stats.builds = old_wood, old_builds
+	minetest.is_creative_enabled = old_creative
+	for x = 17, 23 do
+		for y = 1, 3 do
+			for z = 17, 23 do
+				if stub.get_node_name(x, y, z) == "default:wood" then
+					stub.set_node(x, y, z, "air")
+				end
+			end
+		end
+	end
 end)
 
 run("сон восстанавливает силы", function()
@@ -558,6 +694,46 @@ run("команды /npc", function()
 
 	ok, message = stub.command("Тестер", "npc help")
 	check(ok, "help работает")
+
+	local work_entity = nearest_entity()
+	local work_brain = work_entity and work_entity._brain
+	if work_brain then
+		work_brain.paused = false
+		work_entity._action = nil
+		work_brain.goal = nil
+		ok, message = stub.command("Тестер", "npc chop")
+		check(ok, "chop работает")
+		check(work_brain.goal ~= nil and work_brain.goal.action == "chop", "chop ставит цель")
+		work_brain.goal = nil
+		ok, message = stub.command("Тестер", "npc build")
+		check(ok, "build работает")
+		check(work_brain.goal ~= nil and work_brain.goal.action == "build", "build ставит цель")
+		work_brain.goal = nil
+		work_entity._action = nil
+		W.stop(work_entity)
+	end
+
+	ok, message = stub.command("Тестер", "npc grove")
+	check(ok, "grove работает")
+	check_string(message)
+	local trees = 0
+	for x = -10, 10 do
+		for y = 1, 5 do
+			for z = -10, 10 do
+				if stub.get_node_name(x, y, z) == "default:tree" then trees = trees + 1 end
+			end
+		end
+	end
+	check(trees > 0, "деревья посажены")
+	for x = -10, 10 do
+		for y = 1, 5 do
+			for z = -10, 10 do
+				if stub.get_node_name(x, y, z) == "default:tree" then
+					stub.set_node(x, y, z, "air")
+				end
+			end
+		end
+	end
 end)
 
 run("предмет-призыватель", function()

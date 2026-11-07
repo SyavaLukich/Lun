@@ -971,6 +971,228 @@ ACTIONS.tantrum = {
 	end,
 }
 
+-- ===========================================================================
+-- РУБКА И СТРОИТЕЛЬСТВО
+-- ===========================================================================
+local function plan_requirements(plan)
+	local req = { wood = 0, stone = 0 }
+	for _, entry in ipairs(plan or {}) do
+		local resource = W.resource_for_node(entry.node)
+		req[resource] = (req[resource] or 0) + 1
+	end
+	return req
+end
+
+local function can_pay(brain, req)
+	for resource, amount in pairs(req) do
+		if (brain.carry[resource] or 0) < amount then return false end
+	end
+	return true
+end
+
+local function pay_for(brain, resource)
+	brain.carry[resource] = math.max(0, (brain.carry[resource] or 0) - 1)
+end
+
+local function tree_at(pos)
+	if type(pos) ~= "table" or pos.x == nil or pos.y == nil or pos.z == nil then
+		return false
+	end
+	return smart_npc.is_tree_node(minetest.get_node(pos).name)
+end
+
+local function leaves_at(pos)
+	if type(pos) ~= "table" or pos.x == nil or pos.y == nil or pos.z == nil then
+		return false
+	end
+	local def = minetest.registered_nodes[minetest.get_node(pos).name]
+	return def and def.groups and (def.groups.leaves or 0) > 0 or false
+end
+
+-- После ствола убираем небольшую крону, чтобы дерево не оставалось висеть.
+local function clear_leaves(center, brain)
+	if not center then return end
+	local cx, cy, cz = math.floor(center.x), math.floor(center.y), math.floor(center.z)
+	for dx = -2, 2 do
+		for dz = -2, 2 do
+			for dy = 1, 5 do
+				local pos = { x = cx + dx, y = cy + dy, z = cz + dz }
+				if leaves_at(pos) and not W.is_protected(pos, brain) then
+					minetest.remove_node(pos)
+				end
+			end
+		end
+	end
+end
+
+ACTIONS.chop = {
+	start = function(entity, brain, a, now, ctx)
+		local tree = a.target_pos
+		if not tree_at(tree) then
+			local from = (ctx and ctx.pos) or brain.knowledge.home
+			tree = W.find_resource_pos(from, smart_npc.tree_nodes, 20, brain)
+		end
+		if not tree then return nil end
+		local approach = W.approach_pos(tree, 3)
+		if not approach then return nil end
+		a.tree_pos = U.vector_copy(tree)
+		a.tree_start = U.vector_copy(tree)
+		a.goal_pos = approach
+		a.phase = "go"
+		a.timer = 0
+		a.chopped = 0
+		return a
+	end,
+
+	update = function(entity, brain, a, dtime, now, ctx)
+		a.timer = (a.timer or 0) + dtime
+
+		if a.phase == "go" then
+			if not tree_at(a.tree_pos) then
+				return a.chopped > 0 and "done" or "fail"
+			end
+			local result = move_to(entity, a, a.goal_pos, dtime, WALK_SPEED, 1.5)
+			if result == "arrived" or result == "blocked" then
+				a.phase = "chop"
+				a.timer = 0
+			elseif a.timer > 30 then
+				return "fail"
+			end
+			return "running"
+		end
+
+		if a.phase == "chop" then
+			idle(entity)
+			W.face(entity, a.tree_pos)
+			W.animate(entity, "mine", 20)
+			if a.timer < 0.8 then return "running" end
+			a.timer = 0
+
+			local pos = entity.object:get_pos()
+			local horizontal = pos and U.horizontal_distance(pos, a.tree_pos) or math.huge
+			local vertical = pos and math.abs(pos.y - a.tree_pos.y) or math.huge
+			if not pos or horizontal > 2.8 or vertical > 4.5 then
+				local approach = W.approach_pos(a.tree_pos, 3)
+				if approach then
+					a.goal_pos = approach
+					a.phase = "go"
+					return "running"
+				end
+				return "fail"
+			end
+			if not tree_at(a.tree_pos) then
+				return a.chopped > 0 and "done" or "fail"
+			end
+			if W.is_protected(a.tree_pos, brain) then return "fail" end
+
+			local name = minetest.get_node(a.tree_pos).name
+			W.particles(a.tree_pos, node_particle(name), 6, 0.35, 0.9)
+			W.sound(a.tree_pos, "default_dig_choppy", 0.45)
+			minetest.remove_node(a.tree_pos)
+			a.chopped = (a.chopped or 0) + 1
+			B.add_wood(brain, 1, now)
+			N.add(brain, "energy", -2)
+			N.add(brain, "fun", 1)
+
+			local above = { x = a.tree_pos.x, y = a.tree_pos.y + 1, z = a.tree_pos.z }
+			if a.chopped >= 5 or not tree_at(above) then
+				clear_leaves(a.tree_start, brain)
+				M.place(brain, "Заготовил(а) древесину: " .. tostring(a.chopped), now, a.tree_start, 10)
+				W.say(entity, "Готово. Теперь есть чем заняться.")
+				return "done"
+			end
+			a.tree_pos = above
+			return "running"
+		end
+
+		return "fail"
+	end,
+}
+
+ACTIONS.build = {
+	start = function(entity, brain, a, now, ctx)
+		local site = W.find_build_site(brain, ctx, 8)
+		if not site then return nil end
+
+		local materials = W.build_materials()
+		local plan = W.hut_plan(site, materials)
+		local creative = W.is_creative()
+		local req = plan_requirements(plan)
+
+		if not creative and not can_pay(brain, req) then
+			-- Если камня нет, крышу можно сделать из того же дерева.
+			plan = W.hut_plan(site, { wall = materials.wall, roof = materials.wall })
+			req = plan_requirements(plan)
+			if not can_pay(brain, req) then return nil end
+		end
+
+		a.site = U.vector_copy(site)
+		a.plan = plan
+		a.index = 1
+		a.placed = 0
+		a.phase = "go"
+		a.timer = 0
+		-- Строитель стоит в центре: стены вырастут вокруг, а дверь останется проходом.
+		a.goal_pos = U.vector_copy(site)
+		return a
+	end,
+
+	update = function(entity, brain, a, dtime, now, ctx)
+		a.timer = (a.timer or 0) + dtime
+
+		if a.phase == "go" then
+			local result = move_to(entity, a, a.goal_pos, dtime, WALK_SPEED, 1.8)
+			if result == "arrived" or result == "blocked" then
+				a.phase = "build"
+				a.timer = 0
+			elseif a.timer > 40 then
+				return "fail"
+			end
+			return "running"
+		end
+
+		if a.phase == "build" then
+			idle(entity)
+			W.face(entity, a.site)
+			W.animate(entity, "mine", 18)
+			if a.timer < 0.3 then return "running" end
+			a.timer = 0
+
+			local creative = W.is_creative()
+			local placed_now = false
+			while a.index <= #a.plan and not placed_now do
+				local entry = a.plan[a.index]
+				a.index = a.index + 1
+				if W.is_air(entry.pos) then
+					if W.is_protected(entry.pos, brain) then return "fail" end
+					local resource = W.resource_for_node(entry.node)
+					if not creative then
+						if (brain.carry[resource] or 0) < 1 then return "fail" end
+						pay_for(brain, resource)
+					end
+					minetest.set_node(entry.pos, { name = entry.node })
+					a.placed = (a.placed or 0) + 1
+					placed_now = true
+					W.particles(entry.pos, node_particle(entry.node), 3, 0.3, 0.5)
+					if a.placed % 4 == 0 then
+						W.sound(entry.pos, "default_place_node_hard", 0.4)
+					end
+				end
+			end
+
+			if a.index > #a.plan then
+				if (a.placed or 0) == 0 then return "fail" end
+				B.finish_build(brain, now, a.site, "Построил(а) навес у дома")
+				W.say(entity, "Навес готов. Можно переждать непогоду.")
+				return "done"
+			end
+			return "running"
+		end
+
+		return "fail"
+	end,
+}
+
 ACTIONS.visit = {
 	start = function(entity, brain, a, now, ctx)
 		local spot = a.target_pos

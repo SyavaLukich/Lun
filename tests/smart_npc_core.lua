@@ -595,6 +595,67 @@ test("знания о местах", function()
 	assert_true(found, "место не дублируется")
 end)
 
+test("запас дерева и постройки", function()
+	local brain = new_brain(303)
+	assert_equal(brain.carry.wood, 0, "сначала дерева нет")
+	assert_equal(brain.carry.stone, 0, "сначала камня нет")
+	assert_equal(brain.stats.wood, 0, "счётчик дерева пуст")
+	assert_equal(brain.stats.builds, 0, "счётчик построек пуст")
+
+	assert_equal(B.add_wood(brain, 3, 10), 3, "дерево попало в запас")
+	assert_equal(brain.stats.wood, 3, "счётчик дерева вырос")
+	assert_equal(B.add_wood(brain, "2", 11), 5, "строковое количество приводится к числу")
+	assert_equal(B.add_wood(brain, -4, 12), 5, "отрицательное количество не уменьшает запас")
+
+	assert_equal(B.finish_build(brain, 20, { x = 1, y = 2, z = 3 }), 1, "постройка учтена")
+	assert_true(brain.flags.shelter_built, "флаг навеса выставлен")
+	assert_true(#brain.memory.events > 0, "постройка запомнена")
+	assert_equal(D.action_title("chop"), "Рубит дерево", "название рубки")
+	assert_equal(D.action_title("build"), "Строит навес", "название постройки")
+end)
+
+test("желания трудиться", function()
+	local brain = new_brain(304)
+	brain.personality.traits.conscientiousness = 0.95
+	brain.knowledge.home = { x = 0, y = 0, z = 0 }
+	brain.stats.builds = 0
+	brain.carry.wood = 0
+	local saw_build = false
+	for attempt = 1, 60 do
+		brain.desires = {}
+		brain.whim_timer = 0
+		brain.whim_cooldowns = {}
+		D.refresh(brain, attempt, make_ctx(brain, attempt, 1))
+		for _, desire in ipairs(brain.desires) do
+			if desire.action == "build" then saw_build = true end
+		end
+		if saw_build then break end
+	end
+	assert_true(saw_build, "трудолюбивый житель хочет построить навес")
+
+	brain.stats.builds = 1
+	brain.carry.wood = 0
+	brain.carry.food = 0
+	brain.knowledge.home = nil
+	brain.knowledge.spots = {}
+	brain.memory.events = {}
+	brain.memory.relationships = {}
+	brain.personality.traits.openness = 0.1
+	brain.personality.traits.extraversion = 0.9
+	local saw_chop = false
+	for attempt = 1, 60 do
+		brain.desires = {}
+		brain.whim_timer = 0
+		brain.whim_cooldowns = {}
+		D.refresh(brain, 1000 + attempt, make_ctx(brain, 1000 + attempt, 1))
+		for _, desire in ipairs(brain.desires) do
+			if desire.action == "chop" then saw_chop = true end
+		end
+		if saw_chop then break end
+	end
+	assert_true(saw_chop, "без запаса дерева хочется рубить")
+end)
+
 test("миграция старых данных", function()
 	local brain = B.migrate({})
 	assert_true(brain ~= nil, "пустой мозг мигрирует")
@@ -659,6 +720,10 @@ test("миграция старых данных", function()
 	assert_equal(corrupt.whim_cooldowns.b, 4, "числовое время ожидания сохранено")
 	assert_equal(corrupt.whim_cooldowns.a, nil, "нечисловое время ожидания отброшено")
 	assert_equal(corrupt.carry.food, 2, "запас еды приведён к числу")
+	assert_equal(corrupt.carry.wood, 0, "запас дерева по умолчанию пуст")
+	assert_equal(corrupt.carry.stone, 0, "запас камня по умолчанию пуст")
+	assert_equal(corrupt.stats.wood, 0, "счётчик дерева по умолчанию пуст")
+	assert_equal(corrupt.stats.builds, 0, "счётчик построек по умолчанию пуст")
 	assert_equal(corrupt.last_hurt, nil, "нечисловая отметка удара сброшена")
 	assert_equal(corrupt.last_context, nil, "некорректный контекст сброшен")
 	assert_equal(corrupt.goal, nil, "некорректная цель сброшена")

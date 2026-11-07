@@ -102,6 +102,8 @@ local function activity_block(brain, entity)
 	if brain.goal and brain.goal.title then
 		fs[#fs + 1] = label(x, 2.08, "Желание: " .. brain.goal.title)
 	end
+	fs[#fs + 1] = label(x, 2.42, string.format("Запас: дерево %d · камень %d",
+		brain.carry.wood or 0, brain.carry.stone or 0))
 	local desires = D.top(brain, 3)
 	fs[#fs + 1] = header(x, 2.6, "Главные желания")
 	local dy = 3.0
@@ -115,6 +117,8 @@ local function activity_block(brain, entity)
 			dy = dy + 0.7
 		end
 	end
+	fs[#fs + 1] = button(x, 5.35, 2.0, 0.5, "act_build", "Строить")
+	fs[#fs + 1] = button(x + 2.15, 5.35, 2.0, 0.5, "act_chop", "Рубить")
 	return table.concat(fs)
 end
 
@@ -237,8 +241,9 @@ local function desires_tab(brain, entity, player)
 	fs[#fs + 1] = label(0.5, stats_y + 0.4, string.format("Прожито: %s · еды: %d · снов: %d · разговоров: %d · подарков: %d",
 		U.format_duration(W.now() - (brain.stats.spawned_at or W.now())),
 		brain.stats.meals or 0, brain.stats.naps or 0, brain.stats.chats or 0, brain.stats.gifts or 0))
-	fs[#fs + 1] = label(0.5, stats_y + 0.8, string.format("Исполнено желаний: %d · истерик: %d · обид: %d",
-		brain.stats.desires_done or 0, brain.stats.tantrums or 0, brain.stats.hurts or 0))
+	fs[#fs + 1] = label(0.5, stats_y + 0.8, string.format("Желаний: %d · истерик: %d · обид: %d · построек: %d",
+		brain.stats.desires_done or 0, brain.stats.tantrums or 0, brain.stats.hurts or 0,
+		brain.stats.builds or 0))
 
 	fs[#fs + 1] = button(0.5, 9.0, 2.2, 0.65, "act_home", "Дом здесь")
 	fs[#fs + 1] = button(2.85, 9.0, 2.0, 0.65, "act_follow", "Позвать")
@@ -440,6 +445,26 @@ function UI.handle_fields(player, formname, fields)
 		W.particles(entity.object:get_pos(), "npc_anger.png", 6, 0.5, 1.9)
 		st.tab = 4
 		refresh("Зачем ты так? Я запомню это надолго.", 4)
+		return true
+	end
+
+	if fields.act_build or fields.act_chop then
+		local work = fields.act_build and "build" or "chop"
+		if not W.is_creative() and work == "build" then
+			local wood = brain.carry.wood or 0
+			local stone = brain.carry.stone or 0
+			if wood < 14 or (stone < 9 and wood < 23) then
+				st.tab = 1
+				refresh("Мне не хватает материалов: нужно около 14 дерева и 9 камня (или 23 дерева).", 1)
+				return true
+			end
+		end
+		brain.paused = false
+		smart_npc.actions.stop(entity)
+		entity._action = nil
+		B.set_custom_goal(brain, work, work == "build" and "Построить навес" or "Заготовить дерево", now)
+		st.tab = 1
+		refresh(work == "build" and "Иду строить навес у дома." or "Пойду поищу дерево.", 1)
 		return true
 	end
 

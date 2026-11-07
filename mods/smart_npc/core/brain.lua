@@ -86,7 +86,7 @@ function B.create(opts)
 		mood_label = "ровно",
 		stress = 0,
 		thought_bonus = 0,
-		carry = { food = 0 },
+		carry = { food = 0, wood = 0, stone = 0 },
 		flags = {},
 		paused = false,
 		needs_scale = needs_scale,
@@ -106,6 +106,8 @@ function B.create(opts)
 			chats = 0,
 			gifts = 0,
 			hurts = 0,
+			wood = 0,
+			builds = 0,
 			desires_done = 0,
 			desires_attempted = 0,
 			tantrums = 0,
@@ -170,6 +172,8 @@ function B.migrate(brain)
 	brain.flags = table_or(brain.flags)
 	brain.carry = table_or(brain.carry)
 	brain.carry.food = math.max(0, number_or(brain.carry.food, 0))
+	brain.carry.wood = math.max(0, number_or(brain.carry.wood, 0))
+	brain.carry.stone = math.max(0, number_or(brain.carry.stone, 0))
 	brain.knowledge = table_or(brain.knowledge)
 	brain.knowledge.spots = table_or(brain.knowledge.spots)
 	brain.knowledge.home = pos_or_nil(brain.knowledge.home)
@@ -251,7 +255,8 @@ function B.migrate(brain)
 
 	brain.stats = table_or(brain.stats)
 	for _, field in ipairs({ "chats", "gifts", "hurts", "meals", "naps", "visits",
-		"walks", "begs", "tantrums", "desires_attempted", "desires_done", "ticks" }) do
+		"walks", "begs", "tantrums", "desires_attempted", "desires_done", "ticks",
+		"wood", "builds" }) do
 		brain.stats[field] = math.max(0, number_or(brain.stats[field], 0))
 	end
 	brain.stats.spawned_at = number_or(brain.stats.spawned_at, 0)
@@ -549,6 +554,29 @@ function B.converse(brain, key, name, now, topic, opts)
 	end
 	B.update_mood(brain, now)
 	return rel
+end
+
+-- Запас дерева пополняется рубкой; отдельный счётчик нужен панели и тестам.
+function B.add_wood(brain, amount, now)
+	amount = math.max(0, math.floor(tonumber(amount) or 0))
+	if amount == 0 then return brain.carry and brain.carry.wood or 0 end
+	brain.carry = brain.carry or {}
+	brain.carry.wood = math.max(0, (brain.carry.wood or 0) + amount)
+	brain.stats = brain.stats or {}
+	brain.stats.wood = math.max(0, (brain.stats.wood or 0) + amount)
+	B.update_mood(brain, now or 0)
+	return brain.carry.wood
+end
+
+-- Постройка запоминается как событие и увеличивает счётчик жителя.
+function B.finish_build(brain, now, pos, title)
+	brain.stats = brain.stats or {}
+	brain.stats.builds = math.max(0, (brain.stats.builds or 0) + 1)
+	brain.flags = brain.flags or {}
+	brain.flags.shelter_built = true
+	M.place(brain, title or "Построил(а) навес", now or 0, pos, 18)
+	B.update_mood(brain, now or 0)
+	return brain.stats.builds
 end
 
 function B.receive_gift(brain, key, name, item_label, now)

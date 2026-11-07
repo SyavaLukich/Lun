@@ -103,6 +103,21 @@ local function can_whim(brain, now, action)
 	return not until_time or now >= until_time
 end
 
+-- Проверки мира необязательны: ядро желаний можно гонять без Luanti.
+local function has_tree_near(brain, ctx)
+	local W = smart_npc.world
+	if not W or not W.find_resource_pos or not ctx or not ctx.pos then return true end
+	return W.find_resource_pos(ctx.pos, smart_npc.tree_nodes, 20, brain) ~= nil
+end
+
+local function can_build_now(brain)
+	local W = smart_npc.world
+	if not W or not W.is_creative then return true end
+	if W.is_creative() then return true end
+	local wood, stone = brain.carry.wood or 0, brain.carry.stone or 0
+	return wood >= 23 or (wood >= 14 and stone >= 9)
+end
+
 -- ---------------------------------------------------------------------------
 -- Потребностные желания
 -- ---------------------------------------------------------------------------
@@ -192,6 +207,32 @@ local function generate_whims(brain, now, ctx)
 			line = "Беспорядок не даёт покоя",
 			utility = 7 + c * 20 + U.rand_int(brain, -3, 3),
 			ttl = 300,
+		}
+	end
+
+	-- Хозяйственные жители заготавливают дерево для будущих построек.
+	if c >= 0.3 and (brain.carry and (brain.carry.wood or 0) < 30)
+		and can_whim(brain, now, "chop") and has_tree_near(brain, ctx) then
+		candidates[#candidates + 1] = {
+			id = "whim:chop",
+			action = "chop",
+			title = "Заготовить дерево",
+			line = "Для хозяйства нужно немного древесины",
+			utility = 10 + c * 14 + U.rand_int(brain, -3, 3),
+			ttl = 300,
+		}
+	end
+
+	-- Обустроиться хочется хотя бы раз: житель ставит небольшой навес у дома.
+	if c >= 0.4 and brain.knowledge.home and brain.stats and (brain.stats.builds or 0) < 1
+		and can_whim(brain, now, "build") and can_build_now(brain) then
+		candidates[#candidates + 1] = {
+			id = "whim:build",
+			action = "build",
+			title = "Построить навес",
+			line = "Хочется укрыть свой уголок от дождя",
+			utility = 22 + c * 16 + U.rand_int(brain, -3, 3),
+			ttl = 420,
 		}
 	end
 
@@ -478,6 +519,8 @@ function D.action_title(action)
 		reconcile = "Мирится",
 		visit = "Навещает место",
 		wander = "Гуляет",
+		chop = "Рубит дерево",
+		build = "Строит навес",
 		idle = "Стоит",
 	}
 	return titles[action] or action

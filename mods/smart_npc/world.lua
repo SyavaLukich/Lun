@@ -358,6 +358,161 @@ function W.item_label(itemstring)
 end
 
 -- ---------------------------------------------------------------------------
+-- Труд: деревья, площадка и план постройки
+-- ---------------------------------------------------------------------------
+-- Точка рядом с твёрдым блоком, где житель может стоять (ствол дерева,
+-- центр будущего навеса и т.п.). Ищем по кольцам, чтобы не застрять в стволе.
+function W.approach_pos(target, radius)
+	if type(target) ~= "table" or target.x == nil or target.y == nil or target.z == nil then
+		return nil
+	end
+	local bx, by, bz = floor(target.x), floor(target.y), floor(target.z)
+	radius = math.max(1, math.floor(radius or 3))
+	for r = 1, radius do
+		for dx = -r, r do
+			for dz = -r, r do
+				if math.max(math.abs(dx), math.abs(dz)) == r then
+					for dy = -1, 1 do
+						local x, y, z = bx + dx, by + dy, bz + dz
+						local feet = { x = x, y = y, z = z }
+						local head = { x = x, y = y + 1, z = z }
+						local below = { x = x, y = y - 1, z = z }
+						if W.is_air(feet) and W.is_air(head)
+							and W.is_walkable_name(W.node_at(below).name) then
+							return { x = x + 0.5, y = y, z = z + 0.5 }
+						end
+					end
+				end
+			end
+		end
+	end
+	return nil
+end
+
+function W.find_resource_pos(center, names, radius, brain)
+	if not center or not names or #names == 0 then return nil end
+	local found = minetest.find_node_near(center, radius or 20, names, true)
+	if found and not W.is_protected(found, brain) then return found end
+	return nil
+end
+
+function W.is_creative()
+	if minetest.is_creative_enabled then
+		local ok, value = pcall(minetest.is_creative_enabled, "")
+		if ok and value then return true end
+	end
+	local settings = minetest.settings
+	if settings and settings.get_bool then
+		local ok, value = pcall(settings.get_bool, settings, "creative_mode")
+		if ok and value then return true end
+	end
+	return false
+end
+
+function W.build_materials()
+	return {
+		wall = smart_npc.build_wall_node or "default:wood",
+		roof = smart_npc.build_roof_node or "default:stone",
+	}
+end
+
+function W.resource_for_node(name)
+	if type(name) ~= "string" then return "wood" end
+	if name:find("stone", 1, true) or name:find("cobble", 1, true)
+		or name:find("brick", 1, true) then
+		return "stone"
+	end
+	return "wood"
+end
+
+-- Небольшой навес 3×3: стены в два блока и крыша. Дверной проём — с юга.
+function W.hut_plan(center, materials)
+	if type(center) ~= "table" or center.x == nil or center.y == nil or center.z == nil then
+		return {}
+	end
+	local defaults = W.build_materials()
+	materials = materials or defaults
+	materials = { wall = materials.wall or defaults.wall, roof = materials.roof or defaults.roof }
+	local cx, cy, cz = floor(center.x), floor(center.y), floor(center.z)
+	local plan = {}
+	local function add(x, y, z, role, node)
+		plan[#plan + 1] = {
+			pos = { x = x, y = y, z = z },
+			role = role,
+			node = node,
+		}
+	end
+	for dx = -1, 1 do
+		for dz = -1, 1 do
+			if math.abs(dx) == 1 or math.abs(dz) == 1 then
+				local door = (dx == 0 and dz == 1)
+				if not door then
+					add(cx + dx, cy, cz + dz, "wall", materials.wall)
+					add(cx + dx, cy + 1, cz + dz, "wall", materials.wall)
+				end
+			end
+		end
+	end
+	for dx = -1, 1 do
+		for dz = -1, 1 do
+			add(cx + dx, cy + 2, cz + dz, "roof", materials.roof)
+		end
+	end
+	return plan
+end
+
+function W.is_build_site_clear(center)
+	if not center then return false end
+	local cx, cy, cz = floor(center.x), floor(center.y), floor(center.z)
+	for dx = -1, 1 do
+		for dz = -1, 1 do
+			local below = { x = cx + dx, y = cy - 1, z = cz + dz }
+			if not W.is_walkable_name(W.node_at(below).name) then return false end
+			for dy = 0, 2 do
+				if not W.is_air({ x = cx + dx, y = cy + dy, z = cz + dz }) then
+					return false
+				end
+			end
+		end
+	end
+	return true
+end
+
+-- Ищем ровную площадку недалеко от дома. Стены не должны пересекать
+-- существующие постройки или стволы, поэтому проверяем весь объём 3×3×3.
+function W.find_build_site(brain, ctx, radius)
+	brain = brain or {}
+	local base = (brain.knowledge and brain.knowledge.home) or (ctx and ctx.pos)
+	if not base then return nil end
+	radius = math.max(1, math.floor(radius or 8))
+	local bx, by, bz = floor(base.x), floor(base.y), floor(base.z)
+	for r = 0, radius do
+		for dx = -r, r do
+			for dz = -r, r do
+				if r == 0 or math.max(math.abs(dx), math.abs(dz)) == r then
+					local x, z = bx + dx, bz + dz
+					for y = by + 1, by - 4, -1 do
+						local center = { x = x, y = y, z = z }
+						local feet = { x = x, y = y, z = z }
+						local head = { x = x, y = y + 1, z = z }
+						if W.is_air(feet) and W.is_air(head)
+							and W.is_walkable_name(W.node_at({ x = x, y = y - 1, z = z }).name)
+							and W.is_build_site_clear(center) then
+							local blocked = false
+							for _, entry in ipairs(W.hut_plan(center)) do
+								if W.is_protected(entry.pos, brain) then blocked = true break end
+							end
+							if not blocked then return center end
+						end
+					end
+				end
+			end
+		end
+	end
+	return nil
+end
+
+-- ---------------------------------------------------------------------------
 -- Анимации модели (кадры модели npc.b3d)
 -- ---------------------------------------------------------------------------
 local ANIMATIONS = {
@@ -409,6 +564,9 @@ function W.stop(entity)
 	W.brake(entity)
 	entity._path = nil
 	entity._stuck_time = 0
+	entity._detour = nil
+	entity._detour_until = nil
+	entity._last_move_pos = nil
 end
 
 function W.face(entity, pos)
@@ -432,7 +590,7 @@ local function path_to(entity, target, now)
 	local path = minetest.find_path(
 		{ x = pos.x, y = pos.y, z = pos.z },
 		{ x = target.x, y = target.y, z = target.z },
-		12, 1, 2
+		24, 1, 3
 	)
 	cache = {
 		goal = U.vector_copy(target),
@@ -444,12 +602,37 @@ local function path_to(entity, target, now)
 	return cache
 end
 
+-- Свободная точка сбоку от препятствия: шаг в сторону, а не бесконечный
+-- прыжок в стену. Если сбоку тоже стена, возвращаем nil.
+local function sidestep_point(pos, dirx, dirz, sign)
+	for distance = 1.6, 0.8, -0.4 do
+		local x = pos.x + (-dirz * sign) * distance
+		local z = pos.z + (dirx * sign) * distance
+		if W.is_air({ x = x, y = pos.y, z = z })
+			and W.is_air({ x = x, y = pos.y + 1, z = z })
+			and W.is_walkable_name(W.node_at({ x = x, y = pos.y - 1, z = z }).name) then
+			return { x = x, y = pos.y, z = z }
+		end
+	end
+	return nil
+end
+
 -- Двигает существо к точке. Возвращает "moving", "arrived" или "blocked".
 function W.move_to(entity, target, dt, speed, radius)
 	local obj = entity.object
 	local pos = obj:get_pos()
-	if not pos or not target then return "blocked" end
+	if not pos or type(target) ~= "table" or target.x == nil or target.z == nil then
+		return "blocked"
+	end
 	radius = radius or 1.1
+
+	-- Не идём внутрь твёрдого блока: для осмотра камня/ствола нужна
+	-- соседняя точка, иначе житель бесконечно упирается в грань.
+	if target.y ~= nil and W.is_solid(target) then
+		local approach = W.approach_pos(target, 2)
+		if not approach then return "blocked" end
+		target = approach
+	end
 
 	local dx, dz = target.x - pos.x, target.z - pos.z
 	local distance = sqrt(dx * dx + dz * dz)
@@ -458,6 +641,7 @@ function W.move_to(entity, target, dt, speed, radius)
 	if distance <= radius and math.abs(dy) < 2.2 then
 		W.brake(entity)
 		entity._stuck_time = 0
+		entity._detour = nil
 		return "arrived"
 	end
 
@@ -486,24 +670,49 @@ function W.move_to(entity, target, dt, speed, radius)
 		return "moving"
 	end
 	local dirx, dirz = dx / length, dz / length
+	local steerx, steerz = dirx, dirz
+
+	-- Если житель упёрся и прыжок не помогает, обходим препятствие боком.
+	if (entity._stuck_time or 0) > 0.9 and distance > 1.2 then
+		if not entity._detour or now > (entity._detour_until or 0) then
+			local side = (entity._detour_side == 1) and -1 or 1
+			entity._detour_side = side
+			local side_point = sidestep_point(pos, dirx, dirz, side)
+			if not side_point then
+				side = -side
+				entity._detour_side = side
+				side_point = sidestep_point(pos, dirx, dirz, side)
+			end
+			entity._detour = side_point
+			entity._detour_until = now + 1.4
+		end
+		local detour = entity._detour
+		if detour then
+			local ddx, ddz = detour.x - pos.x, detour.z - pos.z
+			local dlength = sqrt(ddx * ddx + ddz * ddz)
+			if dlength > 0.15 then
+				steerx, steerz = ddx / dlength, ddz / dlength
+			end
+		end
+	end
 
 	-- Прыжок через ступеньку или наверх. Опора проверяется по блоку:
 	-- иначе на вершине прыжка скорость близка к нулю и житель прыгает снова.
 	local velocity = W.get_velocity(obj)
-	local ahead = { x = pos.x + dirx * 0.55, y = pos.y + 0.2, z = pos.z + dirz * 0.55 }
-	local ahead_up = { x = pos.x + dirx * 0.55, y = pos.y + 1.2, z = pos.z + dirz * 0.55 }
+	local ahead = { x = pos.x + steerx * 0.55, y = pos.y + 0.2, z = pos.z + steerz * 0.55 }
+	local ahead_up = { x = pos.x + steerx * 0.55, y = pos.y + 1.2, z = pos.z + steerz * 0.55 }
 	local needs_jump = W.is_solid(ahead) or (W.is_solid(ahead_up) and not W.is_solid({ x = pos.x, y = pos.y + 2.2, z = pos.z }))
 		or dy > 0.8
 	local grounded = W.is_grounded(pos)
 	local on_ground = grounded and math.abs(velocity.y) < 2.0
 
 	if needs_jump and on_ground then
-		W.set_velocity(obj, { x = dirx * speed, y = 4.9, z = dirz * speed })
+		W.set_velocity(obj, { x = steerx * speed, y = 4.9, z = steerz * speed })
 	elseif grounded and velocity.y <= 0.6 then
 		-- Не накапливаем скорость падения, пока стоим на опоре.
-		W.set_velocity(obj, { x = dirx * speed, y = 0, z = dirz * speed })
+		W.set_velocity(obj, { x = steerx * speed, y = 0, z = steerz * speed })
 	else
-		W.set_velocity(obj, { x = dirx * speed, y = velocity.y, z = dirz * speed })
+		W.set_velocity(obj, { x = steerx * speed, y = velocity.y, z = steerz * speed })
 	end
 
 	W.face(entity, waypoint)
@@ -520,15 +729,56 @@ function W.move_to(entity, target, dt, speed, radius)
 	entity._last_move_pos = U.vector_copy(pos)
 
 	if (entity._stuck_time or 0) > 1.2 and on_ground then
-		W.set_velocity(obj, { x = dirx * speed, y = 5.1, z = dirz * speed })
+		W.set_velocity(obj, { x = steerx * speed, y = 5.1, z = steerz * speed })
 	end
 	if (entity._stuck_time or 0) > 4.5 then
 		W.brake(entity)
 		entity._path = nil
+		entity._detour = nil
 		return "blocked"
 	end
 
 	return "moving"
+end
+
+-- Посадить простое дерево (ствол + крона) на свободном месте. Нужно для
+-- пустых творческих миров и демонстрации рубки.
+function W.plant_tree(center)
+	if type(center) ~= "table" or center.x == nil or center.y == nil or center.z == nil then
+		return false
+	end
+	local trunk = nil
+	for _, name in ipairs(smart_npc.tree_nodes or {}) do
+		if name ~= "" then trunk = name break end
+	end
+	trunk = trunk or "default:tree"
+	local x, y, z = floor(center.x), floor(center.y), floor(center.z)
+	if not W.is_walkable_name(W.node_at({ x = x, y = y - 1, z = z }).name) then
+		return false
+	end
+	for dy = 0, 3 do
+		if not W.is_air({ x = x, y = y + dy, z = z }) then return false end
+	end
+	for dy = 0, 3 do
+		minetest.set_node({ x = x, y = y + dy, z = z }, { name = trunk })
+	end
+	local leaves = minetest.registered_nodes["default:leaves"] and "default:leaves" or nil
+	if leaves then
+		for dx = -1, 1 do
+			for dz = -1, 1 do
+				if not (dx == 0 and dz == 0) then
+					local leaf_pos = { x = x + dx, y = y + 3, z = z + dz }
+					if W.is_air(leaf_pos) then
+						minetest.set_node(leaf_pos, { name = leaves })
+					end
+				end
+			end
+		end
+		if W.is_air({ x = x, y = y + 4, z = z }) then
+			minetest.set_node({ x = x, y = y + 4, z = z }, { name = leaves })
+		end
+	end
+	return true
 end
 
 -- ---------------------------------------------------------------------------

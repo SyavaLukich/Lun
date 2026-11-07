@@ -117,11 +117,17 @@ function smart_npc.item_label(itemstring)
 	return name
 end
 
+function smart_npc.is_tree_node(name)
+	local def = minetest.registered_nodes[name]
+	return def and def.groups and (def.groups.tree or 0) > 0 or false
+end
+
 -- Списки блоков собираем после загрузки всех модов.
 minetest.register_on_mods_loaded(function()
 	smart_npc.food_nodes = {}
 	smart_npc.water_nodes = {}
 	smart_npc.interesting_nodes = {}
+	smart_npc.tree_nodes = {}
 
 	for name, def in pairs(minetest.registered_nodes) do
 		local groups = def.groups or {}
@@ -134,11 +140,15 @@ minetest.register_on_mods_loaded(function()
 		if groups.tree or groups.wood or groups.torch or groups.water or groups.stone then
 			smart_npc.interesting_nodes[#smart_npc.interesting_nodes + 1] = name
 		end
+		if groups.tree then
+			smart_npc.tree_nodes[#smart_npc.tree_nodes + 1] = name
+		end
 	end
 
 	table.sort(smart_npc.food_nodes)
 	table.sort(smart_npc.water_nodes)
 	table.sort(smart_npc.interesting_nodes)
+	table.sort(smart_npc.tree_nodes)
 	while #smart_npc.interesting_nodes > 80 do table.remove(smart_npc.interesting_nodes) end
 	if #smart_npc.food_nodes == 0 and minetest.registered_nodes["default:apple"] then
 		smart_npc.food_nodes = { "default:apple" }
@@ -149,8 +159,23 @@ minetest.register_on_mods_loaded(function()
 	if #smart_npc.interesting_nodes == 0 then
 		smart_npc.interesting_nodes = { "default:stone", "default:tree", "default:torch" }
 	end
+	if #smart_npc.tree_nodes == 0 then
+		smart_npc.tree_nodes = { "default:tree" }
+	end
+
+	-- Материалы для небольших построек. В творческом режиме они не тратятся.
+	local function first_registered(names)
+		for _, name in ipairs(names) do
+			if minetest.registered_nodes[name] then return name end
+		end
+		return nil
+	end
+	smart_npc.build_wall_node = first_registered({ "default:wood", "default:tree", "default:stone" })
+	smart_npc.build_roof_node = first_registered({ "default:stone", "default:cobble", "default:wood", "default:tree" })
+	if not smart_npc.build_wall_node then smart_npc.build_wall_node = "default:stone" end
+	if not smart_npc.build_roof_node then smart_npc.build_roof_node = smart_npc.build_wall_node end
 	log("блоки:", #smart_npc.food_nodes, "еда,", #smart_npc.water_nodes, "вода,",
-		#smart_npc.interesting_nodes, "интересные")
+		#smart_npc.interesting_nodes, "интересные,", #smart_npc.tree_nodes, "деревья")
 end)
 
 -- ===========================================================================
@@ -720,7 +745,7 @@ local function require_server(name)
 end
 
 minetest.register_chatcommand("npc", {
-	params = "spawn [имя] | list | info | panel | feed | home | calm | freeze | remove",
+	params = "spawn [имя] | list | info | panel | feed | home | build | chop | grove | calm | freeze | remove",
 	description = "Управление умными жителями",
 	func = function(name, param)
 		local player = minetest.get_player_by_name(name)
@@ -794,6 +819,44 @@ minetest.register_chatcommand("npc", {
 			return true, entity._brain.name .. " запомнил(а) это место как дом."
 		end
 
+		if action == "build" or action == "chop" or action == "gather" then
+			local entity = smart_npc.nearest(pos, 12)
+			if not entity then return false, "Рядом никого нет." end
+			local brain = entity._brain
+			local work = action == "gather" and "chop" or action
+			local title = work == "build" and "Построить навес" or "Заготовить дерево"
+			brain.paused = false
+			A.stop(entity)
+			entity._action = nil
+			B.set_custom_goal(brain, work, title, now)
+			if work == "build" and not W.is_creative() then
+				local wood = brain.carry.wood or 0
+				local stone = brain.carry.stone or 0
+				if wood < 14 or (stone < 9 and wood < 23) then
+					return true, brain.name .. " берётся за постройку, но запасов может не хватить. " ..
+						"Нужно около 14 дерева и 9 камня (или 23 дерева)."
+				end
+			end
+			return true, brain.name .. (work == "build" and " идёт строить навес." or " идёт заготавливать дерево.")
+		end
+
+		if action == "grove" then
+			local planted = 0
+			for i = 1, 6 do
+				local angle = (i / 6) * math.pi * 2
+				local candidate = {
+					x = pos.x + math.cos(angle) * 3.6,
+					y = pos.y,
+					z = pos.z + math.sin(angle) * 3.6,
+				}
+				if W.plant_tree(candidate) then planted = planted + 1 end
+			end
+			if planted == 0 then
+				return false, "Не нашлось свободной земли рядом. Встаньте на твёрдую поверхность."
+			end
+			return true, "Посажено деревьев: " .. planted .. ". Жители смогут их рубить."
+		end
+
 		if action == "remove" then
 			local ok, err = require_server(name)
 			if not ok then return false, err end
@@ -832,7 +895,7 @@ minetest.register_chatcommand("npc", {
 			local entity = smart_npc.nearest(pos, 8)
 			if not entity then
 				return true, "Умные жители: /npc spawn · /npc list · /npc panel · /npc feed · /npc home · " ..
-					"/npc calm · /npc freeze · /npc remove"
+					"/npc build · /npc chop · /npc grove · /npc calm · /npc freeze · /npc remove"
 			end
 			local brain = entity._brain
 			local lines = {

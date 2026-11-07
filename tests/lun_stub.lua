@@ -52,6 +52,10 @@ local NODE_DEFS = {
 		groups = { food_apple = 1, fleshy = 3, dig_immediate = 3 }, on_use = function() end },
 	["default:tree"] = { name = "default:tree", walkable = true, description = "Tree",
 		groups = { tree = 1, wood = 1, choppy = 2 } },
+	["default:wood"] = { name = "default:wood", walkable = true, description = "Wooden Planks",
+		groups = { wood = 1, choppy = 2 } },
+	["default:cobble"] = { name = "default:cobble", walkable = true, description = "Cobblestone",
+		groups = { stone = 2, cracky = 3 } },
 	["default:water_source"] = { name = "default:water_source", walkable = false, description = "Water",
 		groups = { water = 1, liquid = 1 } },
 	["default:torch"] = { name = "default:torch", walkable = false, description = "Torch",
@@ -232,6 +236,8 @@ stub.on_shutdown = {}
 stub.registered_items["default:apple"] = ITEM_DEFS["default:apple"]
 stub.registered_items["default:stone"] = NODE_DEFS["default:stone"]
 stub.registered_items["default:tree"] = NODE_DEFS["default:tree"]
+stub.registered_items["default:wood"] = NODE_DEFS["default:wood"]
+stub.registered_items["default:cobble"] = NODE_DEFS["default:cobble"]
 stub.registered_items["default:torch"] = NODE_DEFS["default:torch"]
 stub.registered_items["default:water_source"] = NODE_DEFS["default:water_source"]
 for name, def in pairs(ITEM_DEFS) do stub.registered_items[name] = def end
@@ -303,15 +309,31 @@ end
 
 function mt.find_node_near(pos, radius, names, search_center)
 	radius = math.floor(radius or 1)
-	local wanted = {}
-	for _, name in ipairs(names or {}) do wanted[name] = true end
+	local wanted, groups = {}, {}
+	for _, name in ipairs(names or {}) do
+		local group = type(name) == "string" and name:match("^group:(.+)$")
+		if group then
+			groups[group] = true
+		else
+			wanted[name] = true
+		end
+	end
+	local function matches(name)
+		if wanted[name] then return true end
+		local def = stub.registered_nodes[name]
+		local node_groups = def and def.groups or {}
+		for group in pairs(groups) do
+			if (node_groups[group] or 0) ~= 0 then return true end
+		end
+		return false
+	end
 	local cx, cy, cz = math.floor(pos.x), math.floor(pos.y), math.floor(pos.z)
 	local best, best_distance
 	for x = cx - radius, cx + radius do
 		for y = cy - radius, cy + radius do
 			for z = cz - radius, cz + radius do
 				local name = stub.get_node_name(x, y, z)
-				if wanted[name] then
+				if matches(name) then
 					local distance = (x - pos.x) ^ 2 + (y - pos.y) ^ 2 + (z - pos.z) ^ 2
 					if not best_distance or distance < best_distance then
 						best = { x = x, y = y, z = z }
@@ -324,8 +346,76 @@ function mt.find_node_near(pos, radius, names, search_center)
 	return best
 end
 
+-- Небольшой BFS: заглушка должна замечать стены, иначе тесты навигации
+-- проверяют только прямую линию. В реальном Luanti работает родной find_path.
 function mt.find_path(from, to, search_distance, max_jump, max_drop)
-	return { copy_pos(from), copy_pos(to) }
+	if not from or not to then return nil end
+	search_distance = math.max(1, math.floor(search_distance or 12))
+	max_jump = math.max(0, math.floor(max_jump or 1))
+	max_drop = math.max(0, math.floor(max_drop or 2))
+	local sx, sy, sz = math.floor(from.x), math.floor(from.y), math.floor(from.z)
+	local gx, gy, gz = math.floor(to.x), math.floor(to.y), math.floor(to.z)
+
+	local function walkable(name)
+		local def = stub.registered_nodes[name]
+		return def and def.walkable or false
+	end
+	local function standable(x, y, z)
+		local feet = stub.get_node_name(x, y, z)
+		local head = stub.get_node_name(x, y + 1, z)
+		local below = stub.get_node_name(x, y - 1, z)
+		return not walkable(feet) and not walkable(head) and walkable(below)
+	end
+
+	if not standable(sx, sy, sz) or not standable(gx, gy, gz) then return nil end
+
+	local function key(x, y, z) return x .. "," .. y .. "," .. z end
+	local skey, gkey = key(sx, sy, sz), key(gx, gy, gz)
+	local parent, coords, visited = {}, {}, {}
+	local queue = { skey }
+	coords[skey] = { x = sx, y = sy, z = sz }
+	parent[skey] = false
+	visited[skey] = true
+	local head, found, expanded = 1, false, 0
+
+	while head <= #queue and expanded < 8000 do
+		local current = queue[head]
+		head = head + 1
+		local pos = coords[current]
+		expanded = expanded + 1
+		if current == gkey then found = true break end
+
+		for _, offset in ipairs({
+			{ x = 1, z = 0 }, { x = -1, z = 0 }, { x = 0, z = 1 }, { x = 0, z = -1 },
+		}) do
+			for dy = -max_drop, max_jump do
+				local nx, ny, nz = pos.x + offset.x, pos.y + dy, pos.z + offset.z
+				local nkey = key(nx, ny, nz)
+				if not visited[nkey]
+					and math.abs(nx - sx) <= search_distance
+					and math.abs(nz - sz) <= search_distance
+					and math.abs(ny - sy) <= search_distance
+					and standable(nx, ny, nz) then
+					visited[nkey] = true
+					parent[nkey] = current
+					coords[nkey] = { x = nx, y = ny, z = nz }
+					queue[#queue + 1] = nkey
+				end
+			end
+		end
+	end
+
+	if not found then return nil end
+	local path, path_key = {}, gkey
+	while path_key do
+		local point = coords[path_key]
+		path[#path + 1] = { x = point.x, y = point.y, z = point.z }
+		path_key = parent[path_key]
+	end
+	for i = 1, math.floor(#path / 2) do
+		path[i], path[#path - i + 1] = path[#path - i + 1], path[i]
+	end
+	return path
 end
 
 function mt.get_objects_inside_radius(pos, radius)
