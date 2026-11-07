@@ -105,6 +105,7 @@ run("автопоявление жителей", function()
 		check(type(entity._brain.full_name) == "string", "имя задано")
 		check_equal(entity.object.armor_groups.immortal, 1, "житель неуязвим")
 		check_string(entity.object.props.infotext)
+		check(entity.object:get_acceleration().y < 0, "у жителя есть гравитация")
 	end
 end)
 

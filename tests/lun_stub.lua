@@ -141,6 +141,7 @@ local function make_object(luaentity)
 		lua = luaentity,
 		pos = { x = 0, y = 0, z = 0 },
 		velocity = { x = 0, y = 0, z = 0 },
+		acceleration = { x = 0, y = 0, z = 0 },
 		yaw = 0,
 		hp = 100,
 		removed = false,
@@ -154,6 +155,8 @@ local function make_object(luaentity)
 	function object:setvelocity(vel) self.velocity = copy_pos(vel) end
 	function object:get_velocity() return copy_pos(self.velocity) end
 	function object:set_velocity(vel) self.velocity = copy_pos(vel) end
+	function object:get_acceleration() return copy_pos(self.acceleration) end
+	function object:set_acceleration(acc) self.acceleration = copy_pos(acc) end
 	function object:get_yaw() return self.yaw end
 	function object:set_yaw(yaw) self.yaw = yaw end
 	function object:set_animation(frames, speed, blend)

@@ -499,7 +499,7 @@ function W.move_to(entity, target, dt, speed, radius)
 
 	if needs_jump and on_ground then
 		W.set_velocity(obj, { x = dirx * speed, y = 4.9, z = dirz * speed })
-	elseif grounded and math.abs(velocity.y) < 0.6 then
+	elseif grounded and velocity.y <= 0.6 then
 		-- Не накапливаем скорость падения, пока стоим на опоре.
 		W.set_velocity(obj, { x = dirx * speed, y = 0, z = dirz * speed })
 	else

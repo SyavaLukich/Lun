@@ -432,6 +432,9 @@ minetest.register_entity("smart_npc:npc", {
 			brain = smart_npc.new_brain(self.object:get_pos(), {})
 		end
 		self._brain = brain
+		-- physical=true включает столкновения, но не гравитацию.
+		-- Без этого житель после прыжка улетает в небо.
+		self.object:set_acceleration({ x = 0, y = -9.81, z = 0 })
 		smart_npc.setup(self, brain)
 	end,
 
