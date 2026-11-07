@@ -413,6 +413,7 @@ function W.build_materials()
 	return {
 		wall = smart_npc.build_wall_node or "default:wood",
 		roof = smart_npc.build_roof_node or "default:stone",
+		fence = smart_npc.build_fence_node or smart_npc.build_wall_node or "default:wood",
 	}
 end
 
@@ -425,40 +426,195 @@ function W.resource_for_node(name)
 	return "wood"
 end
 
--- Небольшой навес 3×3: стены в два блока и крыша. Дверной проём — с юга.
-function W.hut_plan(center, materials)
+-- ---------------------------------------------------------------------------
+-- Постройки: несколько простых планов, чтобы жители не строили одно и то же.
+-- ---------------------------------------------------------------------------
+local BUILD_DEFS = {
+	shelter = {
+		goal = "Построить навес",
+		done = "Построил(а) навес у дома",
+		say = "Навес готов. Можно переждать непогоду.",
+	},
+	pavilion = {
+		goal = "Построить беседку",
+		done = "Построил(а) беседку",
+		say = "Беседка готова. Здесь можно передохнуть.",
+	},
+	bench = {
+		goal = "Построить скамью",
+		done = "Построил(а) скамью",
+		say = "Скамья готова. Есть где посидеть.",
+	},
+	fence = {
+		goal = "Построить ограду",
+		done = "Построил(а) ограду",
+		say = "Ограда готова. Стало уютнее.",
+	},
+	woodpile = {
+		goal = "Сложить поленницу",
+		done = "Сложил(а) поленницу",
+		say = "Поленница сложена. Дрова будут под рукой.",
+	},
+}
+W.build_defs = BUILD_DEFS
+W.build_kind_order = { "shelter", "pavilion", "bench", "fence", "woodpile" }
+
+function W.build_kind_valid(kind)
+	return type(kind) == "string" and BUILD_DEFS[kind] ~= nil
+end
+
+function W.build_kind_goal(kind)
+	local def = BUILD_DEFS[kind] or BUILD_DEFS.shelter
+	return def.goal
+end
+
+function W.build_kind_done(kind)
+	local def = BUILD_DEFS[kind] or BUILD_DEFS.shelter
+	return def.done, def.say
+end
+
+local function add_plan_entry(plan, x, y, z, role, node)
+	plan[#plan + 1] = {
+		pos = { x = x, y = y, z = z },
+		role = role,
+		node = node,
+	}
+end
+
+-- План строится вокруг центра. Сам центр всегда остаётся свободным: там
+-- стоит житель, который ставит блоки, и через него же можно выйти.
+function W.build_plan(kind, center, materials)
 	if type(center) ~= "table" or center.x == nil or center.y == nil or center.z == nil then
 		return {}
 	end
 	local defaults = W.build_materials()
 	materials = materials or defaults
-	materials = { wall = materials.wall or defaults.wall, roof = materials.roof or defaults.roof }
+	materials = {
+		wall = materials.wall or defaults.wall,
+		roof = materials.roof or defaults.roof,
+		fence = materials.fence or defaults.fence or materials.wall or defaults.wall,
+	}
+	if not W.build_kind_valid(kind) then kind = "shelter" end
 	local cx, cy, cz = floor(center.x), floor(center.y), floor(center.z)
 	local plan = {}
-	local function add(x, y, z, role, node)
-		plan[#plan + 1] = {
-			pos = { x = x, y = y, z = z },
-			role = role,
-			node = node,
-		}
+
+	if kind == "bench" then
+		-- Скамья у южной стороны площадки: сиденье и спинка.
+		for dx = -1, 1 do
+			add_plan_entry(plan, cx + dx, cy, cz + 1, "seat", materials.wall)
+			add_plan_entry(plan, cx + dx, cy + 1, cz + 1, "back", materials.wall)
+		end
+		return plan
 	end
+
+	if kind == "fence" then
+		-- Низкая ограда: столбики по углам, центр свободен.
+		for dx = -1, 1, 2 do
+			for dz = -1, 1, 2 do
+				add_plan_entry(plan, cx + dx, cy, cz + dz, "fence", materials.fence)
+				add_plan_entry(plan, cx + dx, cy + 1, cz + dz, "fence", materials.fence)
+			end
+		end
+		return plan
+	end
+
+	if kind == "woodpile" then
+		-- Поленница в два ряда у южной стороны.
+		for dx = -1, 1 do
+			for dy = 0, 1 do
+				add_plan_entry(plan, cx + dx, cy + dy, cz + 1, "woodpile", materials.wall)
+			end
+		end
+		return plan
+	end
+
+	if kind == "pavilion" then
+		-- Открытая беседка: четыре столба и крыша.
+		for dx = -1, 1, 2 do
+			for dz = -1, 1, 2 do
+				add_plan_entry(plan, cx + dx, cy, cz + dz, "post", materials.wall)
+				add_plan_entry(plan, cx + dx, cy + 1, cz + dz, "post", materials.wall)
+			end
+		end
+		for dx = -1, 1 do
+			for dz = -1, 1 do
+				add_plan_entry(plan, cx + dx, cy + 2, cz + dz, "roof", materials.roof)
+			end
+		end
+		return plan
+	end
+
+	-- Навес: стены в два блока, крыша и дверной проём с юга.
 	for dx = -1, 1 do
 		for dz = -1, 1 do
 			if math.abs(dx) == 1 or math.abs(dz) == 1 then
 				local door = (dx == 0 and dz == 1)
 				if not door then
-					add(cx + dx, cy, cz + dz, "wall", materials.wall)
-					add(cx + dx, cy + 1, cz + dz, "wall", materials.wall)
+					add_plan_entry(plan, cx + dx, cy, cz + dz, "wall", materials.wall)
+					add_plan_entry(plan, cx + dx, cy + 1, cz + dz, "wall", materials.wall)
 				end
 			end
 		end
 	end
 	for dx = -1, 1 do
 		for dz = -1, 1 do
-			add(cx + dx, cy + 2, cz + dz, "roof", materials.roof)
+			add_plan_entry(plan, cx + dx, cy + 2, cz + dz, "roof", materials.roof)
 		end
 	end
 	return plan
+end
+
+-- Старое имя оставляем для совместимости с тестами и сторонними вызовами.
+function W.hut_plan(center, materials)
+	return W.build_plan("shelter", center, materials)
+end
+
+function W.plan_requirements(plan)
+	local req = { wood = 0, stone = 0 }
+	for _, entry in ipairs(plan or {}) do
+		local resource = W.resource_for_node(entry.node)
+		req[resource] = (req[resource] or 0) + 1
+	end
+	return req
+end
+
+function W.can_afford(brain, req)
+	if W.is_creative() then return true end
+	local carry = brain and brain.carry or {}
+	for resource, amount in pairs(req or {}) do
+		if (carry[resource] or 0) < amount then return false end
+	end
+	return true
+end
+
+-- План с запасным вариантом: если камня не хватает, крыша делается из
+-- того же материала, что и стены.
+function W.affordable_plan(kind, center, brain)
+	local materials = W.build_materials()
+	local plan = W.build_plan(kind, center, materials)
+	local req = W.plan_requirements(plan)
+	if W.can_afford(brain, req) then return plan, req end
+	local fallback = W.build_plan(kind, center, { wall = materials.wall, roof = materials.wall, fence = materials.fence })
+	req = W.plan_requirements(fallback)
+	if W.can_afford(brain, req) then return fallback, req end
+	return nil, nil
+end
+
+-- Выбираем не только доступную, но и ещё не построенную постройку. Так
+-- житель постепенно обустраивает участок разными вещами.
+function W.choose_build_kind(brain)
+	brain = brain or {}
+	local built = brain.flags and brain.flags.built_kinds or {}
+	if type(built) ~= "table" then built = {} end
+	local any_affordable = nil
+	for _, kind in ipairs(W.build_kind_order) do
+		local plan = W.affordable_plan(kind, { x = 0, y = 0, z = 0 }, brain)
+		if plan then
+			any_affordable = any_affordable or kind
+			if not built[kind] then return kind end
+		end
+	end
+	return any_affordable
 end
 
 function W.is_build_site_clear(center)
@@ -478,13 +634,136 @@ function W.is_build_site_clear(center)
 	return true
 end
 
+-- Не строим на голове у игрока или другого жителя: это главная причина,
+-- по которой раньше можно было случайно замуровать себя или прохожего.
+local function entity_overlaps_node(ep, pos)
+	if not ep then return false end
+	local dx = math.abs(ep.x - (pos.x + 0.5))
+	local dz = math.abs(ep.z - (pos.z + 0.5))
+	-- Половина ширины блока (0.5) плюс половина ширины жителя/игрока
+	-- (до 0.3): всё, что ближе, уже пересекается с телом.
+	if dx >= 0.8 or dz >= 0.8 then return false end
+	local feet = ep.y
+	-- Блок на уровне тела или головы.
+	if pos.y < feet + 1.75 and pos.y + 1 > feet then return true end
+	-- Блок прямо под ногами: его нельзя выкопать или заменить, иначе
+	-- житель (или игрок) провалится.
+	if pos.y + 1 >= feet - 0.05 and pos.y < feet then return true end
+	return false
+end
+
+function W.node_occupied(pos, entity)
+	if type(pos) ~= "table" then return true end
+	if entity and entity.object then
+		local ep = entity.object:get_pos()
+		if ep and entity_overlaps_node(ep, pos) then return true end
+	end
+	for _, other in pairs(smart_npc.active or {}) do
+		if other ~= entity and other.object then
+			local ep = other.object:get_pos()
+			if ep and entity_overlaps_node(ep, pos) then return true end
+		end
+	end
+	local players = minetest.get_connected_players and minetest.get_connected_players() or {}
+	for _, player in ipairs(players) do
+		local ep = player:get_pos()
+		if ep and entity_overlaps_node(ep, pos) then return true end
+	end
+	if minetest.get_objects_inside_radius then
+		local center = { x = pos.x + 0.5, y = pos.y + 0.5, z = pos.z + 0.5 }
+		for _, obj in ipairs(minetest.get_objects_inside_radius(center, 0.8)) do
+			local ep = obj:get_pos()
+			if ep and entity_overlaps_node(ep, pos) then return true end
+		end
+	end
+	return false
+end
+
+-- Свободная точка, где можно встать. Нужна для аварийного выхода из
+-- блока и для проверки места под факел.
+function W.free_standing_pos(center, radius)
+	if type(center) ~= "table" or center.x == nil then return nil end
+	radius = math.max(0, math.floor(radius or 3))
+	local cx, cy, cz = floor(center.x), floor(center.y), floor(center.z)
+	for r = 0, radius do
+		for dx = -r, r do
+			for dz = -r, r do
+				if r == 0 or math.max(math.abs(dx), math.abs(dz)) == r then
+					for dy = 1, -1, -1 do
+						local x, y, z = cx + dx, cy + dy, cz + dz
+						local feet = { x = x, y = y, z = z }
+						local head = { x = x, y = y + 1, z = z }
+						local below = { x = x, y = y - 1, z = z }
+						if W.is_air(feet) and W.is_air(head)
+							and W.is_walkable_name(W.node_at(below).name) then
+							return { x = x + 0.5, y = y, z = z + 0.5 }
+						end
+					end
+				end
+			end
+		end
+	end
+	return nil
+end
+
+function W.entity_inside_solid(entity)
+	if not entity or not entity.object then return false end
+	local pos = entity.object:get_pos()
+	if not pos then return false end
+	return W.is_solid(pos) or W.is_solid({ x = pos.x, y = pos.y + 0.9, z = pos.z })
+end
+
+function W.escape_solid(entity, prefer)
+	if not W.entity_inside_solid(entity) then return true end
+	local pos = entity.object:get_pos()
+	local spot = W.free_standing_pos(prefer or pos, 3)
+	if not spot then return false end
+	entity.object:set_pos(spot)
+	W.set_velocity(entity.object, { x = 0, y = 0, z = 0 })
+	entity._path = nil
+	entity._stuck_time = 0
+	entity._detour = nil
+	entity._last_move_pos = nil
+	return true
+end
+
+-- Все клетки плана должны быть свободны: иначе постройка заменит склон,
+-- чужую стену или ствол. Центр при этом тоже остаётся воздухом.
+function W.build_plan_clear(plan)
+	for _, entry in ipairs(plan or {}) do
+		if not W.is_air(entry.pos) then return false end
+	end
+	return true
+end
+
+local function site_has_people(center, brain)
+	local self_entity = smart_npc.active and smart_npc.active[brain.id]
+	for _, other in pairs(smart_npc.active or {}) do
+		if other ~= self_entity and other.object then
+			local ep = other.object:get_pos()
+			if ep and U.horizontal_distance(center, ep) < 2.4 and math.abs(center.y - ep.y) < 3 then
+				return true
+			end
+		end
+	end
+	local players = minetest.get_connected_players and minetest.get_connected_players() or {}
+	for _, player in ipairs(players) do
+		local ep = player:get_pos()
+		if ep and U.horizontal_distance(center, ep) < 2.4 and math.abs(center.y - ep.y) < 3 then
+			return true
+		end
+	end
+	return false
+end
+
 -- Ищем ровную площадку недалеко от дома. Стены не должны пересекать
 -- существующие постройки или стволы, поэтому проверяем весь объём 3×3×3.
-function W.find_build_site(brain, ctx, radius)
+function W.find_build_site(brain, ctx, radius, kind)
 	brain = brain or {}
 	local base = (brain.knowledge and brain.knowledge.home) or (ctx and ctx.pos)
 	if not base then return nil end
 	radius = math.max(1, math.floor(radius or 8))
+	kind = W.build_kind_valid(kind) and kind or "shelter"
 	local bx, by, bz = floor(base.x), floor(base.y), floor(base.z)
 	for r = 0, radius do
 		for dx = -r, r do
@@ -497,10 +776,13 @@ function W.find_build_site(brain, ctx, radius)
 						local head = { x = x, y = y + 1, z = z }
 						if W.is_air(feet) and W.is_air(head)
 							and W.is_walkable_name(W.node_at({ x = x, y = y - 1, z = z }).name)
-							and W.is_build_site_clear(center) then
-							local blocked = false
-							for _, entry in ipairs(W.hut_plan(center)) do
-								if W.is_protected(entry.pos, brain) then blocked = true break end
+							and W.is_build_site_clear(center) and not site_has_people(center, brain) then
+							local plan = W.build_plan(kind, center)
+							local blocked = not W.build_plan_clear(plan)
+							if not blocked then
+								for _, entry in ipairs(plan) do
+									if W.is_protected(entry.pos, brain) then blocked = true break end
+								end
 							end
 							if not blocked then return center end
 						end
@@ -510,6 +792,102 @@ function W.find_build_site(brain, ctx, radius)
 		end
 	end
 	return nil
+end
+
+-- ---------------------------------------------------------------------------
+-- Копание и поделки
+-- ---------------------------------------------------------------------------
+function W.is_diggable_name(name)
+	local def = minetest.registered_nodes[name]
+	if not def or not def.groups then return false end
+	return (def.groups.stone or 0) > 0 and (def.groups.tree or 0) == 0
+		and (def.groups.wood or 0) == 0 and (def.groups.liquid or 0) == 0
+end
+
+-- Ищем камень на поверхности рядом, но не под ногами жителя и не в самом
+-- доме: иначе житель выкопает площадку, на которой стоит.
+function W.find_dig_pos(center, radius, brain, entity)
+	if type(center) ~= "table" or center.x == nil then return nil end
+	radius = math.max(1, math.floor(radius or 8))
+	local home = brain and brain.knowledge and brain.knowledge.home
+	local cx, cy, cz = floor(center.x), floor(center.y), floor(center.z)
+	local self_pos = entity and entity.object and entity.object:get_pos()
+	for r = 1, radius do
+		for dx = -r, r do
+			for dz = -r, r do
+				if math.max(math.abs(dx), math.abs(dz)) == r then
+					for dy = -2, 2 do
+						local pos = { x = cx + dx, y = cy + dy, z = cz + dz }
+						local name = W.node_at(pos).name
+						if W.is_diggable_name(name) and W.is_air({ x = pos.x, y = pos.y + 1, z = pos.z })
+							and W.is_walkable_name(W.node_at({ x = pos.x, y = pos.y - 1, z = pos.z }).name)
+							and not W.node_occupied(pos, entity) then
+							local near_self = self_pos and U.horizontal_distance(pos, self_pos) < 1.5
+							local near_home = home and U.horizontal_distance(pos, home) < 2.2
+							if not near_self and not near_home and not W.is_protected(pos, brain)
+								and W.approach_pos(pos, 2) then
+								return pos
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+	return nil
+end
+
+function W.find_torch_spot(center, radius, brain, entity)
+	if type(center) ~= "table" or center.x == nil then return nil end
+	radius = math.max(1, math.floor(radius or 5))
+	if not minetest.registered_nodes["default:torch"] then return nil end
+	local cx, cy, cz = floor(center.x), floor(center.y), floor(center.z)
+	for r = 0, radius do
+		for dx = -r, r do
+			for dz = -r, r do
+				if r == 0 or math.max(math.abs(dx), math.abs(dz)) == r then
+					local pos = { x = cx + dx, y = cy, z = cz + dz }
+					if W.is_air(pos) and W.is_walkable_name(W.node_at({ x = pos.x, y = pos.y - 1, z = pos.z }).name)
+						and W.is_air({ x = pos.x, y = pos.y + 1, z = pos.z })
+						and not W.node_occupied(pos, entity) and not W.is_protected(pos, brain) then
+						return pos
+					end
+				end
+			end
+		end
+	end
+	return nil
+end
+
+function W.craft_recipe(brain)
+	local creative = W.is_creative()
+	brain = brain or {}
+	local carry = brain.carry or {}
+	if minetest.registered_nodes["default:torch"] then
+		if creative or ((carry.wood or 0) >= 1 and (carry.stone or 0) >= 1) then
+			return {
+				id = "torch",
+				title = "факел",
+				node = "default:torch",
+				wood = 1,
+				stone = 1,
+				crafted = 1,
+				label = "факел",
+				say = "Смастерил(а) факел. Будет светлее.",
+			}
+		end
+	end
+	return nil
+end
+
+-- Возвращает true, если получилось поставить факел.
+function W.place_torch(center, brain, entity)
+	if not minetest.registered_nodes["default:torch"] then return false end
+	local spot = W.find_torch_spot(center, 5, brain, entity)
+	if not spot then return false end
+	minetest.set_node(spot, { name = "default:torch" })
+	W.particles(spot, "default_torch_on_floor.png", 4, 0.2, 0.5)
+	return true, spot
 end
 
 -- ---------------------------------------------------------------------------
@@ -617,6 +995,34 @@ local function sidestep_point(pos, dirx, dirz, sign)
 	return nil
 end
 
+-- Несколько точек перед жителем: одна точка иногда попадает в щель между
+-- блоками, и тогда он не понимает, что перед ним ступенька.
+local function probe_solid(pos, dirx, dirz, distance, height)
+	return W.is_solid({
+		x = pos.x + dirx * distance,
+		y = pos.y + height,
+		z = pos.z + dirz * distance,
+	})
+end
+
+-- Куда нужно встать, чтобы оказаться на вершине одной ступеньки. Это
+-- аварийный «подъём» после того, как обычный прыжок несколько раз не вышел.
+local function climb_point(pos, dirx, dirz)
+	local by = floor(pos.y)
+	for distance = 0.55, 1.25, 0.2 do
+		local x = floor(pos.x + dirx * distance)
+		local z = floor(pos.z + dirz * distance)
+		local step = { x = x, y = by, z = z }
+		if W.is_solid(step)
+			and W.is_air({ x = x, y = by + 1, z = z })
+			and W.is_air({ x = x, y = by + 2, z = z })
+			and W.is_walkable_name(W.node_at(step).name) then
+			return { x = x + 0.5, y = by + 1, z = z + 0.5 }
+		end
+	end
+	return nil
+end
+
 -- Двигает существо к точке. Возвращает "moving", "arrived" или "blocked".
 function W.move_to(entity, target, dt, speed, radius)
 	local obj = entity.object
@@ -634,11 +1040,19 @@ function W.move_to(entity, target, dt, speed, radius)
 		target = approach
 	end
 
+	if target.y == nil then
+		target = { x = target.x, y = pos.y, z = target.z }
+	end
 	local dx, dz = target.x - pos.x, target.z - pos.z
 	local distance = sqrt(dx * dx + dz * dz)
 	local dy = target.y - pos.y
 
-	if distance <= radius and math.abs(dy) < 2.2 then
+	-- Раньше допуск 2.2 блока означал, что житель «приходил» к цели на
+	-- вершине соседнего блока, даже не запрыгнув на него. Теперь для
+	-- наземной цели нужно действительно оказаться на её уровне.
+	local supported = W.is_grounded(pos)
+	local high_target = dy > 1.2
+	if distance <= radius and math.abs(dy) <= 0.95 and (supported or high_target) then
 		W.brake(entity)
 		entity._stuck_time = 0
 		entity._detour = nil
@@ -655,7 +1069,7 @@ function W.move_to(entity, target, dt, speed, radius)
 	if cache and cache.path and #cache.path >= 2 then
 		local index = math.max(2, math.min(cache.index or 2, #cache.path))
 		local point = cache.path[index]
-		if point and U.horizontal_distance(pos, point) < 0.8 and math.abs(pos.y - point.y) < 1.6 then
+		if point and U.horizontal_distance(pos, point) < 0.8 and math.abs(pos.y - point.y) < 0.95 then
 			index = math.min(index + 1, #cache.path)
 			cache.index = index
 			point = cache.path[index]
@@ -696,18 +1110,22 @@ function W.move_to(entity, target, dt, speed, radius)
 		end
 	end
 
-	-- Прыжок через ступеньку или наверх. Опора проверяется по блоку:
-	-- иначе на вершине прыжка скорость близка к нулю и житель прыгает снова.
+	-- Прыжок через ступеньку или наверх. Проверяем несколько точек, чтобы
+	-- не пропустить блок на краю диагонали, и не прыгаем в двухблочную
+	-- стену: её всё равно не перепрыгнуть, лучше сразу обойти.
 	local velocity = W.get_velocity(obj)
-	local ahead = { x = pos.x + steerx * 0.55, y = pos.y + 0.2, z = pos.z + steerz * 0.55 }
-	local ahead_up = { x = pos.x + steerx * 0.55, y = pos.y + 1.2, z = pos.z + steerz * 0.55 }
-	local needs_jump = W.is_solid(ahead) or (W.is_solid(ahead_up) and not W.is_solid({ x = pos.x, y = pos.y + 2.2, z = pos.z }))
-		or dy > 0.8
+	local low = probe_solid(pos, steerx, steerz, 0.5, 0.2)
+		or probe_solid(pos, steerx, steerz, 0.75, 0.35)
+		or probe_solid(pos, steerx, steerz, 0.95, 0.2)
+	local head = probe_solid(pos, steerx, steerz, 0.55, 1.15)
+		or probe_solid(pos, steerx, steerz, 0.8, 1.2)
+	local clear_top = not probe_solid(pos, steerx, steerz, 0.55, 1.8)
+	local needs_jump = (low and (not head or clear_top)) or dy > 0.8
 	local grounded = W.is_grounded(pos)
 	local on_ground = grounded and math.abs(velocity.y) < 2.0
 
 	if needs_jump and on_ground then
-		W.set_velocity(obj, { x = steerx * speed, y = 4.9, z = steerz * speed })
+		W.set_velocity(obj, { x = steerx * speed, y = 5.2, z = steerz * speed })
 	elseif grounded and velocity.y <= 0.6 then
 		-- Не накапливаем скорость падения, пока стоим на опоре.
 		W.set_velocity(obj, { x = steerx * speed, y = 0, z = steerz * speed })
@@ -729,7 +1147,23 @@ function W.move_to(entity, target, dt, speed, radius)
 	entity._last_move_pos = U.vector_copy(pos)
 
 	if (entity._stuck_time or 0) > 1.2 and on_ground then
-		W.set_velocity(obj, { x = steerx * speed, y = 5.1, z = steerz * speed })
+		W.set_velocity(obj, { x = steerx * speed, y = 5.2, z = steerz * speed })
+	end
+
+	-- Если прыжок несколько раз подряд не помог, аккуратно ставим жителя
+	-- на вершину ровной ступеньки. Это лучше, чем полминуты «бодать» блок
+	-- и затем бросить цель. Подъём разрешён только на один блок и только
+	-- когда над ним есть свободное место.
+	if (entity._stuck_time or 0) > 2.2 and on_ground and dy > -0.3 then
+		local assist = climb_point(pos, steerx, steerz)
+		if assist then
+			obj:set_pos(assist)
+			W.set_velocity(obj, { x = 0, y = 0, z = 0 })
+			entity._stuck_time = 0
+			entity._detour = nil
+			entity._last_move_pos = U.vector_copy(assist)
+			return "moving"
+		end
 	end
 	if (entity._stuck_time or 0) > 4.5 then
 		W.brake(entity)

@@ -86,7 +86,7 @@ function B.create(opts)
 		mood_label = "ровно",
 		stress = 0,
 		thought_bonus = 0,
-		carry = { food = 0, wood = 0, stone = 0 },
+		carry = { food = 0, wood = 0, stone = 0, crafted = 0 },
 		flags = {},
 		paused = false,
 		needs_scale = needs_scale,
@@ -107,7 +107,9 @@ function B.create(opts)
 			gifts = 0,
 			hurts = 0,
 			wood = 0,
+			stone = 0,
 			builds = 0,
+			crafts = 0,
 			desires_done = 0,
 			desires_attempted = 0,
 			tantrums = 0,
@@ -170,10 +172,13 @@ function B.migrate(brain)
 	end
 
 	brain.flags = table_or(brain.flags)
+	if type(brain.flags.built_kinds) ~= "table" then brain.flags.built_kinds = {} end
+	if type(brain.flags.crafts) ~= "table" then brain.flags.crafts = {} end
 	brain.carry = table_or(brain.carry)
 	brain.carry.food = math.max(0, number_or(brain.carry.food, 0))
 	brain.carry.wood = math.max(0, number_or(brain.carry.wood, 0))
 	brain.carry.stone = math.max(0, number_or(brain.carry.stone, 0))
+	brain.carry.crafted = math.max(0, number_or(brain.carry.crafted, 0))
 	brain.knowledge = table_or(brain.knowledge)
 	brain.knowledge.spots = table_or(brain.knowledge.spots)
 	brain.knowledge.home = pos_or_nil(brain.knowledge.home)
@@ -256,7 +261,7 @@ function B.migrate(brain)
 	brain.stats = table_or(brain.stats)
 	for _, field in ipairs({ "chats", "gifts", "hurts", "meals", "naps", "visits",
 		"walks", "begs", "tantrums", "desires_attempted", "desires_done", "ticks",
-		"wood", "builds" }) do
+		"wood", "stone", "builds", "crafts" }) do
 		brain.stats[field] = math.max(0, number_or(brain.stats[field], 0))
 	end
 	brain.stats.spawned_at = number_or(brain.stats.spawned_at, 0)
@@ -318,6 +323,7 @@ function B.migrate(brain)
 			brain.goal.started = number_or(brain.goal.started, 0)
 			brain.goal.story = brain.goal.story and true or false
 			brain.goal.special = brain.goal.special and true or false
+			brain.goal.build_kind = brain.goal.build_kind and tostring(brain.goal.build_kind) or nil
 		end
 	else
 		brain.goal = nil
@@ -439,6 +445,7 @@ function B.set_custom_goal(brain, action, title, now, extra)
 		target_pos = extra and extra.target_pos or nil,
 		fear = extra and extra.fear or false,
 		story = extra and extra.story or nil,
+		build_kind = extra and extra.build_kind or nil,
 		started = now,
 		special = true,
 	}
@@ -466,6 +473,7 @@ function B.apply_desire(brain, desire, now)
 		target_pos = desire.target_pos,
 		fear = desire.fear,
 		story = desire.story,
+		build_kind = desire.build_kind,
 		started = now,
 		special = false,
 	}
@@ -526,6 +534,7 @@ function B.tick(brain, ctx)
 				brain.goal.target = desire.target or brain.goal.target
 				brain.goal.target_pos = desire.target_pos or brain.goal.target_pos
 				brain.goal.title = desire.title
+				brain.goal.build_kind = desire.build_kind or brain.goal.build_kind
 				brain.activity = desire.action
 			end
 		elseif not brain.goal or brain.goal.action ~= "wander" then
@@ -569,14 +578,49 @@ function B.add_wood(brain, amount, now)
 end
 
 -- Постройка запоминается как событие и увеличивает счётчик жителя.
-function B.finish_build(brain, now, pos, title)
+function B.finish_build(brain, now, pos, title, kind)
 	brain.stats = brain.stats or {}
 	brain.stats.builds = math.max(0, (brain.stats.builds or 0) + 1)
 	brain.flags = brain.flags or {}
 	brain.flags.shelter_built = true
+	if type(brain.flags.built_kinds) ~= "table" then brain.flags.built_kinds = {} end
+	if kind then brain.flags.built_kinds[kind] = true end
 	M.place(brain, title or "Построил(а) навес", now or 0, pos, 18)
 	B.update_mood(brain, now or 0)
 	return brain.stats.builds
+end
+
+-- Камень пополняется копанием; используется для построек и поделок.
+function B.add_stone(brain, amount, now)
+	amount = math.max(0, math.floor(tonumber(amount) or 0))
+	if amount == 0 then return brain.carry and brain.carry.stone or 0 end
+	brain.carry = brain.carry or {}
+	brain.carry.stone = math.max(0, (brain.carry.stone or 0) + amount)
+	brain.stats = brain.stats or {}
+	brain.stats.stone = math.max(0, (brain.stats.stone or 0) + amount)
+	B.update_mood(brain, now or 0)
+	return brain.carry.stone
+end
+
+-- Небольшая поделка: факел и подобные вещи. Счётчик нужен панели и тестам.
+function B.craft(brain, label, now, placed)
+	label = tostring(label or "вещь")
+	brain.stats = brain.stats or {}
+	brain.stats.crafts = math.max(0, (brain.stats.crafts or 0) + 1)
+	brain.carry = brain.carry or {}
+	brain.carry.crafted = math.max(0, (brain.carry.crafted or 0) + 1)
+	brain.flags = brain.flags or {}
+	if type(brain.flags.crafts) ~= "table" then brain.flags.crafts = {} end
+	brain.flags.crafts[label] = true
+	M.add(brain, {
+		kind = "craft",
+		text = "Смастерил(а) " .. label,
+		valence = 12,
+		importance = 5,
+	}, now or 0)
+	B.update_mood(brain, now or 0)
+	if placed then brain.flags.last_craft_placed = true end
+	return brain.stats.crafts
 end
 
 function B.receive_gift(brain, key, name, item_label, now)

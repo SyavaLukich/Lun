@@ -149,6 +149,22 @@ minetest.register_on_mods_loaded(function()
 	table.sort(smart_npc.water_nodes)
 	table.sort(smart_npc.interesting_nodes)
 	table.sort(smart_npc.tree_nodes)
+
+	-- Камни, которые житель может добыть. Кирпичи и декоративные блоки
+	-- сюда не входят: их нельзя считать природным камнем.
+	smart_npc.dig_nodes = {}
+	for name, def in pairs(minetest.registered_nodes) do
+		local groups = def.groups or {}
+		if (groups.stone or 0) > 0 and (groups.wood or 0) == 0 and (groups.tree or 0) == 0
+			and not name:find("brick", 1, true) and not name:find("stone_block", 1, true)
+			and not name:find("cobble", 1, true) then
+			smart_npc.dig_nodes[#smart_npc.dig_nodes + 1] = name
+		end
+	end
+	table.sort(smart_npc.dig_nodes)
+	if #smart_npc.dig_nodes == 0 and minetest.registered_nodes["default:stone"] then
+		smart_npc.dig_nodes = { "default:stone" }
+	end
 	while #smart_npc.interesting_nodes > 80 do table.remove(smart_npc.interesting_nodes) end
 	if #smart_npc.food_nodes == 0 and minetest.registered_nodes["default:apple"] then
 		smart_npc.food_nodes = { "default:apple" }
@@ -172,10 +188,13 @@ minetest.register_on_mods_loaded(function()
 	end
 	smart_npc.build_wall_node = first_registered({ "default:wood", "default:tree", "default:stone" })
 	smart_npc.build_roof_node = first_registered({ "default:stone", "default:cobble", "default:wood", "default:tree" })
+	smart_npc.build_fence_node = first_registered({ "default:fence_wood", "default:fence", "default:wood", "default:tree" })
 	if not smart_npc.build_wall_node then smart_npc.build_wall_node = "default:stone" end
 	if not smart_npc.build_roof_node then smart_npc.build_roof_node = smart_npc.build_wall_node end
+	if not smart_npc.build_fence_node then smart_npc.build_fence_node = smart_npc.build_wall_node end
 	log("блоки:", #smart_npc.food_nodes, "еда,", #smart_npc.water_nodes, "вода,",
-		#smart_npc.interesting_nodes, "интересные,", #smart_npc.tree_nodes, "деревья")
+		#smart_npc.interesting_nodes, "интересные,", #smart_npc.tree_nodes, "деревья,",
+		#smart_npc.dig_nodes, "камни")
 end)
 
 -- ===========================================================================
@@ -427,7 +446,9 @@ minetest.register_entity("smart_npc:npc", {
 		mesh = "npc.b3d",
 		textures = { "npc_skin_1.png", "npc_blank.png", "npc_blank.png" },
 		visual_size = { x = 1, y = 1 },
-		stepheight = 0.6,
+		-- Полный шаг в один блок: иначе на краю ступеньки житель
+		-- застревает, хотя формально умеет прыгать.
+		stepheight = 1.0,
 		make_footstep_sound = false,
 		hp_max = 100,
 		breath_max = 10,
@@ -745,7 +766,7 @@ local function require_server(name)
 end
 
 minetest.register_chatcommand("npc", {
-	params = "spawn [имя] | list | info | panel | feed | home | build | chop | grove | calm | freeze | remove",
+	params = "spawn [имя] | list | info | panel | feed | home | build [вид] | chop | dig | craft | grove | calm | freeze | remove",
 	description = "Управление умными жителями",
 	func = function(name, param)
 		local player = minetest.get_player_by_name(name)
@@ -819,25 +840,58 @@ minetest.register_chatcommand("npc", {
 			return true, entity._brain.name .. " запомнил(а) это место как дом."
 		end
 
-		if action == "build" or action == "chop" or action == "gather" then
+		if action == "build" then
 			local entity = smart_npc.nearest(pos, 12)
 			if not entity then return false, "Рядом никого нет." end
 			local brain = entity._brain
-			local work = action == "gather" and "chop" or action
-			local title = work == "build" and "Построить навес" or "Заготовить дерево"
+			local kind = args[2]
+			if not W.build_kind_valid(kind) then kind = W.choose_build_kind(brain) or "shelter" end
+			local plan = W.affordable_plan(kind, { x = 0, y = 0, z = 0 }, brain)
+			if not plan then
+				return true, brain.name .. " не берётся: не хватает материалов для этой постройки. " ..
+					"Нужны дерево и камень; дерево можно заготовить командой /npc chop."
+			end
 			brain.paused = false
 			A.stop(entity)
 			entity._action = nil
-			B.set_custom_goal(brain, work, title, now)
-			if work == "build" and not W.is_creative() then
-				local wood = brain.carry.wood or 0
-				local stone = brain.carry.stone or 0
-				if wood < 14 or (stone < 9 and wood < 23) then
-					return true, brain.name .. " берётся за постройку, но запасов может не хватить. " ..
-						"Нужно около 14 дерева и 9 камня (или 23 дерева)."
-				end
+			B.set_custom_goal(brain, "build", W.build_kind_goal(kind), now, { build_kind = kind })
+			return true, brain.name .. " идёт строить: " .. W.build_kind_goal(kind):lower() .. "."
+		end
+
+		if action == "chop" or action == "gather" then
+			local entity = smart_npc.nearest(pos, 12)
+			if not entity then return false, "Рядом никого нет." end
+			local brain = entity._brain
+			brain.paused = false
+			A.stop(entity)
+			entity._action = nil
+			B.set_custom_goal(brain, "chop", "Заготовить дерево", now)
+			return true, brain.name .. " идёт заготавливать дерево."
+		end
+
+		if action == "dig" then
+			local entity = smart_npc.nearest(pos, 12)
+			if not entity then return false, "Рядом никого нет." end
+			local brain = entity._brain
+			brain.paused = false
+			A.stop(entity)
+			entity._action = nil
+			B.set_custom_goal(brain, "dig", "Добыть камень", now)
+			return true, brain.name .. " идёт копать камень."
+		end
+
+		if action == "craft" then
+			local entity = smart_npc.nearest(pos, 12)
+			if not entity then return false, "Рядом никого нет." end
+			local brain = entity._brain
+			if not W.craft_recipe(brain) then
+				return true, brain.name .. " не может мастерить: нужен факел в игре и немного дерева с камнем."
 			end
-			return true, brain.name .. (work == "build" and " идёт строить навес." or " идёт заготавливать дерево.")
+			brain.paused = false
+			A.stop(entity)
+			entity._action = nil
+			B.set_custom_goal(brain, "craft", "Смастерить факел", now)
+			return true, brain.name .. " берётся мастерить."
 		end
 
 		if action == "grove" then
@@ -895,7 +949,7 @@ minetest.register_chatcommand("npc", {
 			local entity = smart_npc.nearest(pos, 8)
 			if not entity then
 				return true, "Умные жители: /npc spawn · /npc list · /npc panel · /npc feed · /npc home · " ..
-					"/npc build · /npc chop · /npc grove · /npc calm · /npc freeze · /npc remove"
+					"/npc build [вид] · /npc chop · /npc dig · /npc craft · /npc grove · /npc calm · /npc freeze · /npc remove"
 			end
 			local brain = entity._brain
 			local lines = {

@@ -102,8 +102,8 @@ local function activity_block(brain, entity)
 	if brain.goal and brain.goal.title then
 		fs[#fs + 1] = label(x, 2.08, "Желание: " .. brain.goal.title)
 	end
-	fs[#fs + 1] = label(x, 2.42, string.format("Запас: дерево %d · камень %d",
-		brain.carry.wood or 0, brain.carry.stone or 0))
+	fs[#fs + 1] = label(x, 2.42, string.format("Запас: дерево %d · камень %d · поделки %d",
+		brain.carry.wood or 0, brain.carry.stone or 0, brain.carry.crafted or 0))
 	local desires = D.top(brain, 3)
 	fs[#fs + 1] = header(x, 2.6, "Главные желания")
 	local dy = 3.0
@@ -119,6 +119,8 @@ local function activity_block(brain, entity)
 	end
 	fs[#fs + 1] = button(x, 5.35, 2.0, 0.5, "act_build", "Строить")
 	fs[#fs + 1] = button(x + 2.15, 5.35, 2.0, 0.5, "act_chop", "Рубить")
+	fs[#fs + 1] = button(x, 5.9, 2.0, 0.5, "act_craft", "Мастерить")
+	fs[#fs + 1] = button(x + 2.15, 5.9, 2.0, 0.5, "act_dig", "Копать")
 	return table.concat(fs)
 end
 
@@ -448,23 +450,43 @@ function UI.handle_fields(player, formname, fields)
 		return true
 	end
 
-	if fields.act_build or fields.act_chop then
-		local work = fields.act_build and "build" or "chop"
-		if not W.is_creative() and work == "build" then
-			local wood = brain.carry.wood or 0
-			local stone = brain.carry.stone or 0
-			if wood < 14 or (stone < 9 and wood < 23) then
+	if fields.act_build or fields.act_chop or fields.act_craft or fields.act_dig then
+		local work = fields.act_build and "build" or fields.act_chop and "chop"
+			or fields.act_craft and "craft" or "dig"
+		local extra, title
+		if work == "build" then
+			local kind = W.choose_build_kind(brain) or "shelter"
+			if not W.affordable_plan(kind, { x = 0, y = 0, z = 0 }, brain) then
 				st.tab = 1
-				refresh("Мне не хватает материалов: нужно около 14 дерева и 9 камня (или 23 дерева).", 1)
+				refresh("Мне не хватает материалов для постройки. Нужны дерево и камень.", 1)
 				return true
 			end
+			extra = { build_kind = kind }
+			title = W.build_kind_goal(kind)
+		elseif work == "craft" then
+			if not W.craft_recipe(brain) then
+				st.tab = 1
+				refresh("Мне не из чего мастерить: нужны дерево и камень.", 1)
+				return true
+			end
+			title = "Смастерить факел"
+		elseif work == "dig" then
+			title = "Добыть камень"
+		else
+			title = "Заготовить дерево"
 		end
 		brain.paused = false
 		smart_npc.actions.stop(entity)
 		entity._action = nil
-		B.set_custom_goal(brain, work, work == "build" and "Построить навес" or "Заготовить дерево", now)
+		B.set_custom_goal(brain, work, title, now, extra)
 		st.tab = 1
-		refresh(work == "build" and "Иду строить навес у дома." or "Пойду поищу дерево.", 1)
+		local messages = {
+			build = "Иду строить.",
+			chop = "Пойду поищу дерево.",
+			craft = "Пойду мастерить.",
+			dig = "Пойду поищу камень.",
+		}
+		refresh(messages[work] or "Принято.", 1)
 		return true
 	end
 

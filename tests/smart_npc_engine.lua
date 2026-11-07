@@ -259,6 +259,12 @@ run("панель: все вкладки", function()
 	work_brain.goal = nil
 	stub.receive_fields(player, "smart_npc:panel", { act_chop = true })
 	check(work_brain.goal ~= nil and work_brain.goal.action == "chop", "кнопка «Рубить» ставит цель")
+	work_brain.goal = nil
+	stub.receive_fields(player, "smart_npc:panel", { act_craft = true })
+	check(work_brain.goal ~= nil and work_brain.goal.action == "craft", "кнопка «Мастерить» ставит цель")
+	work_brain.goal = nil
+	stub.receive_fields(player, "smart_npc:panel", { act_dig = true })
+	check(work_brain.goal ~= nil and work_brain.goal.action == "dig", "кнопка «Копать» ставит цель")
 	work_brain.goal = saved_goal
 	entity._action = nil
 	W.stop(entity)
@@ -442,6 +448,7 @@ run("житель строит навес", function()
 	local old_pos = entity.object:get_pos()
 	local old_home = brain.knowledge.home
 	local old_wood, old_builds = brain.carry.wood, brain.stats.builds
+	local old_built_kinds = brain.flags.built_kinds
 	local old_creative = minetest.is_creative_enabled
 	minetest.is_creative_enabled = function() return false end
 	entity.object:set_pos({ x = 20.5, y = 1, z = 20.5 })
@@ -451,12 +458,14 @@ run("житель строит навес", function()
 	brain.carry.stone = 0
 	brain.stats.builds = 0
 	brain.flags.shelter_built = nil
+	brain.flags.built_kinds = nil
 	entity._action = nil
 	brain.last_context = W.scan(entity, brain, W.now())
 	brain.goal = {
 		desire_id = "test:build",
 		action = "build",
 		title = "Построить навес",
+		build_kind = "shelter",
 		started = W.now(),
 		special = true,
 	}
@@ -472,12 +481,14 @@ run("житель строит навес", function()
 	check(built >= 20, "навес собран из блоков: " .. built)
 	check_equal(brain.stats.builds, 1, "постройка учтена в статистике")
 	check((brain.carry.wood or 0) < 40, "материалы израсходованы")
+	check(not W.entity_inside_solid(entity), "житель не замуровал себя")
 	brain.goal = nil
 	entity._action = nil
 	W.stop(entity)
 	entity.object:set_pos(old_pos)
 	brain.knowledge.home = old_home
 	brain.carry.wood, brain.stats.builds = old_wood, old_builds
+	brain.flags.built_kinds = old_built_kinds
 	minetest.is_creative_enabled = old_creative
 	for x = 17, 23 do
 		for y = 1, 3 do
@@ -488,6 +499,112 @@ run("житель строит навес", function()
 			end
 		end
 	end
+end)
+
+run("житель копает камень", function()
+	local entity = first_entity()
+	local brain = entity._brain
+	local old_pos = entity.object:get_pos()
+	local old_home = brain.knowledge.home
+	local old_stone, old_stat = brain.carry.stone, brain.stats.stone
+	entity.object:set_pos({ x = 4.5, y = 1, z = 4.5 })
+	brain.knowledge.home = { x = 4.5, y = 1, z = 4.5 }
+	brain.paused = false
+	brain.carry.stone = 0
+	brain.stats.stone = 0
+	entity._action = nil
+	stub.set_node(6, 1, 4, "default:stone")
+	brain.last_context = W.scan(entity, brain, W.now())
+	brain.goal = {
+		desire_id = "test:dig",
+		action = "dig",
+		title = "Добыть камень",
+		target_pos = { x = 6, y = 1, z = 4 },
+		started = W.now(),
+		special = true,
+	}
+	for _ = 1, 80 do smart_npc.actions.tick(entity, 0.2) end
+	check_equal(stub.get_node_name(6, 1, 4), "air", "камень выкопан")
+	check((brain.carry.stone or 0) >= 1, "камень попал в запас")
+	check((brain.stats.stone or 0) >= 1, "счётчик камня вырос")
+	brain.goal = nil
+	entity._action = nil
+	W.stop(entity)
+	entity.object:set_pos(old_pos)
+	brain.knowledge.home = old_home
+	brain.carry.stone, brain.stats.stone = old_stone, old_stat
+	stub.set_node(6, 1, 4, "air")
+end)
+
+run("житель мастерит факел", function()
+	local entity = first_entity()
+	local brain = entity._brain
+	local old_pos = entity.object:get_pos()
+	local old_home = brain.knowledge.home
+	local old_wood, old_stone = brain.carry.wood, brain.carry.stone
+	local old_crafted, old_crafts = brain.carry.crafted, brain.stats.crafts
+	entity.object:set_pos({ x = 10.5, y = 1, z = 10.5 })
+	brain.knowledge.home = { x = 10.5, y = 1, z = 10.5 }
+	brain.paused = false
+	brain.carry.wood = 2
+	brain.carry.stone = 2
+	brain.carry.crafted = 0
+	brain.stats.crafts = 0
+	entity._action = nil
+	brain.last_context = W.scan(entity, brain, W.now())
+	brain.goal = {
+		desire_id = "test:craft",
+		action = "craft",
+		title = "Смастерить факел",
+		started = W.now(),
+		special = true,
+	}
+	for _ = 1, 30 do smart_npc.actions.tick(entity, 0.2) end
+	check((brain.carry.crafted or 0) >= 1, "поделка учтена в запасе")
+	check((brain.stats.crafts or 0) >= 1, "поделка учтена в статистике")
+	brain.goal = nil
+	entity._action = nil
+	W.stop(entity)
+	entity.object:set_pos(old_pos)
+	brain.knowledge.home = old_home
+	brain.carry.wood, brain.carry.stone = old_wood, old_stone
+	brain.carry.crafted, brain.stats.crafts = old_crafted, old_crafts
+	for x = 7, 13 do
+		for z = 7, 13 do
+			if stub.get_node_name(x, 1, z) == "default:torch" then
+				stub.set_node(x, 1, z, "air")
+			end
+		end
+	end
+end)
+
+run("виды построек различаются", function()
+	local center = { x = 0, y = 1, z = 0 }
+	local counts = {}
+	for _, kind in ipairs(W.build_kind_order) do
+		local plan = W.build_plan(kind, center)
+		check(#plan > 0, "план " .. kind .. " не пуст")
+		counts[#counts + 1] = kind .. ":" .. #plan
+	end
+	check(#counts >= 4, "видов построек достаточно: " .. table.concat(counts, ", "))
+	check_equal(W.build_plan("shelter", center)[1].node, "default:wood", "навес из дерева")
+	check(W.build_plan("fence", center)[1].node ~= nil, "ограда имеет блок")
+end)
+
+run("подъём на ступеньку", function()
+	local entity = first_entity()
+	local old_pos = entity.object:get_pos()
+	entity.object:set_pos({ x = 10.5, y = 1, z = 10.5 })
+	entity.object:set_velocity({ x = 0, y = 0, z = 0 })
+	stub.set_node(11, 1, 10, "default:stone")
+	local result = W.move_to(entity, { x = 11, y = 2, z = 10.5 }, 0.2, 1.9, 0.75)
+	local velocity = entity.object:get_velocity()
+	check(result ~= "arrived", "цель на вершине не считается достигнутой снизу")
+	check((velocity.y or 0) > 1, "житель прыгает на ступеньку")
+	entity.object:set_pos(old_pos)
+	entity.object:set_velocity({ x = 0, y = 0, z = 0 })
+	stub.set_node(11, 1, 10, "air")
+	W.stop(entity)
 end)
 
 run("сон восстанавливает силы", function()
@@ -695,7 +812,7 @@ run("команды /npc", function()
 	ok, message = stub.command("Тестер", "npc help")
 	check(ok, "help работает")
 
-	local work_entity = nearest_entity()
+	local work_entity = smart_npc.nearest(player:get_pos(), 12)
 	local work_brain = work_entity and work_entity._brain
 	if work_brain then
 		work_brain.paused = false
@@ -708,6 +825,18 @@ run("команды /npc", function()
 		ok, message = stub.command("Тестер", "npc build")
 		check(ok, "build работает")
 		check(work_brain.goal ~= nil and work_brain.goal.action == "build", "build ставит цель")
+		work_brain.goal = nil
+		ok, message = stub.command("Тестер", "npc build bench")
+		check(ok, "build с видом работает")
+		check(work_brain.goal ~= nil and work_brain.goal.build_kind == "bench", "вид постройки передан")
+		work_brain.goal = nil
+		ok, message = stub.command("Тестер", "npc dig")
+		check(ok, "dig работает")
+		check(work_brain.goal ~= nil and work_brain.goal.action == "dig", "dig ставит цель")
+		work_brain.goal = nil
+		ok, message = stub.command("Тестер", "npc craft")
+		check(ok, "craft работает")
+		check(work_brain.goal ~= nil and work_brain.goal.action == "craft", "craft ставит цель")
 		work_brain.goal = nil
 		work_entity._action = nil
 		W.stop(work_entity)

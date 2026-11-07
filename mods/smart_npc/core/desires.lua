@@ -110,12 +110,36 @@ local function has_tree_near(brain, ctx)
 	return W.find_resource_pos(ctx.pos, smart_npc.tree_nodes, 20, brain) ~= nil
 end
 
-local function can_build_now(brain)
+local function can_build_now(brain, kind)
 	local W = smart_npc.world
 	if not W or not W.is_creative then return true end
+	if kind and W.affordable_plan then
+		return W.affordable_plan(kind, { x = 0, y = 0, z = 0 }, brain) ~= nil
+	end
+	if W.choose_build_kind then return W.choose_build_kind(brain) ~= nil end
 	if W.is_creative() then return true end
-	local wood, stone = brain.carry.wood or 0, brain.carry.stone or 0
+	local carry = brain.carry or {}
+	local wood, stone = carry.wood or 0, carry.stone or 0
 	return wood >= 23 or (wood >= 14 and stone >= 9)
+end
+
+local function has_stone_near(brain, ctx)
+	local W = smart_npc.world
+	if not W or not W.find_dig_pos or not ctx or not ctx.pos then return true end
+	local entity = smart_npc.active and smart_npc.active[brain.id]
+	return W.find_dig_pos(ctx.pos, 12, brain, entity) ~= nil
+end
+
+local function can_craft_now(brain)
+	local W = smart_npc.world
+	if not W or not W.craft_recipe then return true end
+	return W.craft_recipe(brain) ~= nil
+end
+
+local function build_kind_now(brain)
+	local W = smart_npc.world
+	if W and W.choose_build_kind then return W.choose_build_kind(brain) end
+	return "shelter"
 end
 
 -- ---------------------------------------------------------------------------
@@ -223,17 +247,49 @@ local function generate_whims(brain, now, ctx)
 		}
 	end
 
-	-- Обустроиться хочется хотя бы раз: житель ставит небольшой навес у дома.
-	if c >= 0.4 and brain.knowledge.home and brain.stats and (brain.stats.builds or 0) < 1
-		and can_whim(brain, now, "build") and can_build_now(brain) then
+	-- Хозяйственный житель добывает камень, если его мало.
+	if c >= 0.25 and ((brain.carry and brain.carry.stone or 0) < 12)
+		and can_whim(brain, now, "dig") and has_stone_near(brain, ctx) then
 		candidates[#candidates + 1] = {
-			id = "whim:build",
-			action = "build",
-			title = "Построить навес",
-			line = "Хочется укрыть свой уголок от дождя",
-			utility = 22 + c * 16 + U.rand_int(brain, -3, 3),
-			ttl = 420,
+			id = "whim:dig",
+			action = "dig",
+			title = "Добыть камень",
+			line = "Хочется запастись камнем для построек",
+			utility = 8 + c * 15 + U.rand_int(brain, -3, 3),
+			ttl = 300,
 		}
+	end
+
+	-- Из дерева и камня можно смастерить факел и осветить дом.
+	if c >= 0.3 and brain.stats and (brain.stats.crafts or 0) < 3
+		and can_whim(brain, now, "craft") and can_craft_now(brain) then
+		candidates[#candidates + 1] = {
+			id = "whim:craft",
+			action = "craft",
+			title = "Смастерить факел",
+			line = "Хочется сделать что-то полезное своими руками",
+			utility = 12 + c * 14 + U.rand_int(brain, -3, 3),
+			ttl = 300,
+		}
+	end
+
+	-- Постепенно обустраиваем участок разными постройками.
+	if c >= 0.4 and brain.knowledge.home and brain.stats and (brain.stats.builds or 0) < 5
+		and can_whim(brain, now, "build") then
+		local kind = build_kind_now(brain)
+		if kind and can_build_now(brain, kind) then
+			local W = smart_npc.world
+			local title = W and W.build_kind_goal and W.build_kind_goal(kind) or "Построить навес"
+			candidates[#candidates + 1] = {
+				id = "whim:build",
+				action = "build",
+				title = title,
+				line = "Хочется укрыть и обустроить свой уголок",
+				utility = 22 + c * 16 + U.rand_int(brain, -3, 3),
+				ttl = 420,
+				build_kind = kind,
+			}
+		end
 	end
 
 	-- Интроверты ищут тишину.
@@ -520,7 +576,9 @@ function D.action_title(action)
 		visit = "Навещает место",
 		wander = "Гуляет",
 		chop = "Рубит дерево",
-		build = "Строит навес",
+		build = "Строит",
+		dig = "Копает камень",
+		craft = "Мастерит",
 		idle = "Стоит",
 	}
 	return titles[action] or action

@@ -974,22 +974,6 @@ ACTIONS.tantrum = {
 -- ===========================================================================
 -- РУБКА И СТРОИТЕЛЬСТВО
 -- ===========================================================================
-local function plan_requirements(plan)
-	local req = { wood = 0, stone = 0 }
-	for _, entry in ipairs(plan or {}) do
-		local resource = W.resource_for_node(entry.node)
-		req[resource] = (req[resource] or 0) + 1
-	end
-	return req
-end
-
-local function can_pay(brain, req)
-	for resource, amount in pairs(req) do
-		if (brain.carry[resource] or 0) < amount then return false end
-	end
-	return true
-end
-
 local function pay_for(brain, resource)
 	brain.carry[resource] = math.max(0, (brain.carry[resource] or 0) - 1)
 end
@@ -1111,27 +1095,25 @@ ACTIONS.chop = {
 
 ACTIONS.build = {
 	start = function(entity, brain, a, now, ctx)
-		local site = W.find_build_site(brain, ctx, 8)
+		local kind = a.build_kind
+		if not W.build_kind_valid(kind) then
+			kind = W.choose_build_kind(brain) or "shelter"
+		end
+		a.build_kind = kind
+		local site = W.find_build_site(brain, ctx, 8, kind)
 		if not site then return nil end
 
-		local materials = W.build_materials()
-		local plan = W.hut_plan(site, materials)
-		local creative = W.is_creative()
-		local req = plan_requirements(plan)
-
-		if not creative and not can_pay(brain, req) then
-			-- Если камня нет, крышу можно сделать из того же дерева.
-			plan = W.hut_plan(site, { wall = materials.wall, roof = materials.wall })
-			req = plan_requirements(plan)
-			if not can_pay(brain, req) then return nil end
-		end
+		local plan = W.affordable_plan(kind, site, brain)
+		if not plan then return nil end
 
 		a.site = U.vector_copy(site)
 		a.plan = plan
 		a.index = 1
 		a.placed = 0
+		a.skipped = 0
 		a.phase = "go"
 		a.timer = 0
+		a.title = W.build_kind_goal(kind)
 		-- Строитель стоит в центре: стены вырастут вокруг, а дверь останется проходом.
 		a.goal_pos = U.vector_copy(site)
 		return a
@@ -1139,19 +1121,42 @@ ACTIONS.build = {
 
 	update = function(entity, brain, a, dtime, now, ctx)
 		a.timer = (a.timer or 0) + dtime
+		local pos = entity.object:get_pos()
 
 		if a.phase == "go" then
-			local result = move_to(entity, a, a.goal_pos, dtime, WALK_SPEED, 1.8)
-			if result == "arrived" or result == "blocked" then
-				a.phase = "build"
-				a.timer = 0
-			elseif a.timer > 40 then
+			-- Приходим именно в центр. Слишком широкий радиус прибытия
+			-- раньше позволял остановиться на месте будущей стены.
+			local result = move_to(entity, a, a.goal_pos, dtime, WALK_SPEED, 0.75)
+			if result == "arrived" then
+				local at_center = pos and U.horizontal_distance(pos, a.site) <= 0.9
+					and math.abs(pos.y - a.site.y) <= 0.9
+				if at_center then
+					a.phase = "build"
+					a.timer = 0
+				else
+					a.arrive_tries = (a.arrive_tries or 0) + 1
+					entity._path = nil
+					if a.arrive_tries > 12 then return "fail" end
+				end
+			elseif result == "blocked" then
+				-- Не строим издалека: иначе можно случайно замуровать себя.
+				return "fail"
+			elseif a.timer > 35 then
 				return "fail"
 			end
 			return "running"
 		end
 
 		if a.phase == "build" then
+			-- Перед первой установкой ещё раз убеждаемся, что стоим в центре.
+			if not pos or U.horizontal_distance(pos, a.site) > 1.15
+				or math.abs(pos.y - a.site.y) > 1.15 then
+				a.phase = "go"
+				a.timer = 0
+				a.goal_pos = U.vector_copy(a.site)
+				return "running"
+			end
+
 			idle(entity)
 			W.face(entity, a.site)
 			W.animate(entity, "mine", 18)
@@ -1163,7 +1168,7 @@ ACTIONS.build = {
 			while a.index <= #a.plan and not placed_now do
 				local entry = a.plan[a.index]
 				a.index = a.index + 1
-				if W.is_air(entry.pos) then
+				if W.is_air(entry.pos) and not W.node_occupied(entry.pos, entity) then
 					if W.is_protected(entry.pos, brain) then return "fail" end
 					local resource = W.resource_for_node(entry.node)
 					if not creative then
@@ -1177,19 +1182,146 @@ ACTIONS.build = {
 					if a.placed % 4 == 0 then
 						W.sound(entry.pos, "default_place_node_hard", 0.4)
 					end
+					-- На всякий случай выбираемся, если блок всё же оказался
+					-- на месте жителя (например, из-за чужой постройки).
+					W.escape_solid(entity, a.site)
+				else
+					a.skipped = (a.skipped or 0) + 1
 				end
 			end
 
 			if a.index > #a.plan then
 				if (a.placed or 0) == 0 then return "fail" end
-				B.finish_build(brain, now, a.site, "Построил(а) навес у дома")
-				W.say(entity, "Навес готов. Можно переждать непогоду.")
+				W.escape_solid(entity, a.site)
+				local done_title, say = W.build_kind_done(a.build_kind)
+				B.finish_build(brain, now, a.site, done_title, a.build_kind)
+				W.say(entity, say)
 				return "done"
 			end
 			return "running"
 		end
 
 		return "fail"
+	end,
+}
+
+ACTIONS.dig = {
+	start = function(entity, brain, a, now, ctx)
+		local target = a.target_pos
+		if not target or not W.is_diggable_name(W.node_at(target).name)
+			or not W.is_air({ x = target.x, y = target.y + 1, z = target.z })
+			or W.node_occupied(target, entity) or W.is_protected(target, brain) then
+			target = W.find_dig_pos((ctx and ctx.pos) or brain.knowledge.home, 14, brain, entity)
+		end
+		if not target then return nil end
+		local approach = W.approach_pos(target, 2)
+		if not approach then
+			approach = W.free_standing_pos({ x = target.x + 1, y = target.y, z = target.z }, 2)
+		end
+		if not approach then return nil end
+		a.dig_pos = U.vector_copy(target)
+		a.goal_pos = approach
+		a.phase = "go"
+		a.timer = 0
+		a.dug = 0
+		return a
+	end,
+
+	update = function(entity, brain, a, dtime, now, ctx)
+		a.timer = (a.timer or 0) + dtime
+
+		if a.phase == "go" then
+			if not W.is_diggable_name(W.node_at(a.dig_pos).name) then
+				return "fail"
+			end
+			local result = move_to(entity, a, a.goal_pos, dtime, WALK_SPEED, 1.5)
+			if result == "arrived" or result == "blocked" then
+				a.phase = "dig"
+				a.timer = 0
+			elseif a.timer > 28 then
+				return "fail"
+			end
+			return "running"
+		end
+
+		if a.phase == "dig" then
+			idle(entity)
+			W.face(entity, a.dig_pos)
+			W.animate(entity, "mine", 20)
+			if a.timer < 0.9 then return "running" end
+			a.timer = 0
+
+			local pos = entity.object:get_pos()
+			local horizontal = pos and U.horizontal_distance(pos, a.dig_pos) or math.huge
+			local vertical = pos and math.abs(pos.y - a.dig_pos.y) or math.huge
+			if not pos or horizontal > 3.0 or vertical > 2.8 then
+				local approach = W.approach_pos(a.dig_pos, 2)
+				if approach then
+					a.goal_pos = approach
+					a.phase = "go"
+					return "running"
+				end
+				return "fail"
+			end
+			if not W.is_diggable_name(W.node_at(a.dig_pos).name) then return "fail" end
+			if W.node_occupied(a.dig_pos, entity) then return "fail" end
+			if W.is_protected(a.dig_pos, brain) then return "fail" end
+
+			local name = W.node_at(a.dig_pos).name
+			W.particles(a.dig_pos, node_particle(name), 6, 0.35, 0.8)
+			W.sound(a.dig_pos, "default_dig_cracky", 0.45)
+			minetest.remove_node(a.dig_pos)
+			a.dug = (a.dug or 0) + 1
+			B.add_stone(brain, 1, now)
+			N.add(brain, "energy", -2)
+			N.add(brain, "fun", 1)
+			W.say(entity, "Набрал(а) камня. Пригодится для дела.")
+			return "done"
+		end
+
+		return "fail"
+	end,
+}
+
+ACTIONS.craft = {
+	start = function(entity, brain, a, now, ctx)
+		local recipe = W.craft_recipe(brain)
+		if not recipe then return nil end
+		a.recipe = recipe
+		a.phase = "craft"
+		a.timer = 0
+		return a
+	end,
+
+	update = function(entity, brain, a, dtime, now, ctx)
+		a.timer = (a.timer or 0) + dtime
+		idle(entity)
+		W.animate(entity, "mine", 16)
+		if a.timer < 1.8 then return "running" end
+
+		local recipe = a.recipe or {}
+		if not W.is_creative() then
+			if (brain.carry.wood or 0) < (recipe.wood or 0)
+				or (brain.carry.stone or 0) < (recipe.stone or 0) then
+				return "fail"
+			end
+			brain.carry.wood = (brain.carry.wood or 0) - (recipe.wood or 0)
+			brain.carry.stone = (brain.carry.stone or 0) - (recipe.stone or 0)
+		end
+
+		local placed = false
+		if recipe.node then
+			local home = brain.knowledge and brain.knowledge.home
+			local pos = entity.object:get_pos()
+			placed = W.place_torch(home or pos, brain, entity)
+		end
+		B.craft(brain, recipe.label or recipe.title, now, placed)
+		if placed then
+			W.say(entity, recipe.say or "Готово. Смастерил(а) полезную вещь.")
+		else
+			W.say(entity, "Смастерил(а) " .. tostring(recipe.title or "вещь") .. ", но места для неё пока нет.")
+		end
+		return "done"
 	end,
 }
 
@@ -1295,6 +1427,7 @@ local function start_action(entity, brain, goal, now, ctx)
 		target_pos = goal.target_pos,
 		fear = goal.fear,
 		story = goal.story,
+		build_kind = goal.build_kind,
 		started = now,
 	}
 	local result = def.start(entity, brain, a, now, ctx)
