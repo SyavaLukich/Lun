@@ -31,6 +31,13 @@ function W.is_solid(pos)
 	return W.is_walkable_name(name)
 end
 
+-- Опора определяется по блоку под ногами, а не по скорости: на вершине
+-- прыжка скорость почти нулевая, и раньше это принималось за «на земле».
+function W.is_grounded(pos)
+	if not pos then return false end
+	return W.is_solid({ x = pos.x, y = pos.y - 0.1, z = pos.z })
+end
+
 function W.is_air(pos)
 	local name = W.node_at(pos).name
 	return name == "air" or name == "ignore"
@@ -375,10 +382,27 @@ end
 -- ---------------------------------------------------------------------------
 -- Движение
 -- ---------------------------------------------------------------------------
+-- Luanti 5.17 переименовал getvelocity/setvelocity; на старых версиях
+-- оставляем запасной вариант.
+function W.get_velocity(obj)
+	if not obj then return { x = 0, y = 0, z = 0 } end
+	if obj.get_velocity then return obj:get_velocity() end
+	return obj:getvelocity()
+end
+
+function W.set_velocity(obj, velocity)
+	if not obj then return end
+	if obj.set_velocity then
+		obj:set_velocity(velocity)
+	else
+		obj:setvelocity(velocity)
+	end
+end
+
 function W.brake(entity)
 	local obj = entity.object
-	local velocity = obj:getvelocity()
-	obj:setvelocity({ x = 0, y = velocity.y, z = 0 })
+	local velocity = W.get_velocity(obj)
+	W.set_velocity(obj, { x = 0, y = velocity.y, z = 0 })
 end
 
 function W.stop(entity)
@@ -463,18 +487,23 @@ function W.move_to(entity, target, dt, speed, radius)
 	end
 	local dirx, dirz = dx / length, dz / length
 
-	-- Прыжок через ступеньку или наверх.
-	local velocity = obj:getvelocity()
+	-- Прыжок через ступеньку или наверх. Опора проверяется по блоку:
+	-- иначе на вершине прыжка скорость близка к нулю и житель прыгает снова.
+	local velocity = W.get_velocity(obj)
 	local ahead = { x = pos.x + dirx * 0.55, y = pos.y + 0.2, z = pos.z + dirz * 0.55 }
 	local ahead_up = { x = pos.x + dirx * 0.55, y = pos.y + 1.2, z = pos.z + dirz * 0.55 }
 	local needs_jump = W.is_solid(ahead) or (W.is_solid(ahead_up) and not W.is_solid({ x = pos.x, y = pos.y + 2.2, z = pos.z }))
 		or dy > 0.8
-	local on_ground = math.abs(velocity.y) < 0.6
+	local grounded = W.is_grounded(pos)
+	local on_ground = grounded and math.abs(velocity.y) < 2.0
 
 	if needs_jump and on_ground then
-		obj:setvelocity({ x = dirx * speed, y = 4.9, z = dirz * speed })
+		W.set_velocity(obj, { x = dirx * speed, y = 4.9, z = dirz * speed })
+	elseif grounded and math.abs(velocity.y) < 0.6 then
+		-- Не накапливаем скорость падения, пока стоим на опоре.
+		W.set_velocity(obj, { x = dirx * speed, y = 0, z = dirz * speed })
 	else
-		obj:setvelocity({ x = dirx * speed, y = velocity.y, z = dirz * speed })
+		W.set_velocity(obj, { x = dirx * speed, y = velocity.y, z = dirz * speed })
 	end
 
 	W.face(entity, waypoint)
@@ -491,7 +520,7 @@ function W.move_to(entity, target, dt, speed, radius)
 	entity._last_move_pos = U.vector_copy(pos)
 
 	if (entity._stuck_time or 0) > 1.2 and on_ground then
-		obj:setvelocity({ x = dirx * speed, y = 5.1, z = dirz * speed })
+		W.set_velocity(obj, { x = dirx * speed, y = 5.1, z = dirz * speed })
 	end
 	if (entity._stuck_time or 0) > 4.5 then
 		W.brake(entity)
@@ -523,7 +552,8 @@ function W.particles(pos, texture, amount, spread, height)
 		minsize = 2,
 		maxsize = 5,
 		texture = texture,
-		glow = texture == "npc_heart.png" or texture == "npc_zzz.png",
+		-- В Luanti 5.17 glow — число, а не boolean.
+		glow = (texture == "npc_heart.png" or texture == "npc_zzz.png") and 1 or 0,
 	})
 end
 
@@ -569,7 +599,7 @@ function W.teleport_near(entity, pos)
 	if not pos then return end
 	local safe = W.random_walkable_near(pos, 4) or { x = pos.x, y = pos.y + 1, z = pos.z }
 	entity.object:set_pos(safe)
-	entity.object:setvelocity({ x = 0, y = 0, z = 0 })
+	W.set_velocity(entity.object, { x = 0, y = 0, z = 0 })
 end
 
 -- Куда идти в случае опасности: дом, иначе освещённое место рядом.

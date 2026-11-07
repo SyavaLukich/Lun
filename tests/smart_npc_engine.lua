@@ -89,6 +89,8 @@ run("регистрация мода", function()
 	check(stub.registered_craftitems["smart_npc:spawner"] ~= nil, "предмет-призыватель есть")
 	check(stub.chatcommands["npc"] ~= nil, "команда /npc есть")
 	check(#stub.formspecs == 0, "панель не открывалась сама")
+	check(def.on_rightclick ~= nil, "обработчик правого клика зарегистрирован")
+	check(def.on_right_click == nil, "не используется устаревшее имя on_right_click")
 	check(#smart_npc.food_nodes >= 1, "список еды собран")
 	check(#smart_npc.water_nodes >= 1, "список воды собран")
 	check(#smart_npc.interesting_nodes >= 1, "список интересных блоков собран")
@@ -104,6 +106,13 @@ run("автопоявление жителей", function()
 		check_equal(entity.object.armor_groups.immortal, 1, "житель неуязвим")
 		check_string(entity.object.props.infotext)
 	end
+end)
+
+run("опора определяется по блоку под ногами", function()
+	stub.set_node(20, 0, 20, "default:stone")
+	check(W.is_grounded({ x = 20.5, y = 1, z = 20.5 }), "на блоке есть опора")
+	check(not W.is_grounded({ x = 20.5, y = 4, z = 20.5 }), "в воздухе опоры нет")
+	check(not W.is_grounded(nil), "без позиции опоры нет")
 end)
 
 run("повтор id при загрузке не вытесняет жителя", function()
@@ -389,14 +398,14 @@ run("правый клик и панель", function()
 	local entity = first_entity()
 	player.wielded = stub.new_stack("", 0)
 	local before = #stub.formspecs
-	local result = def.on_right_click(entity, player)
+	local result = def.on_rightclick(entity, player)
 	check(#stub.formspecs > before, "правый клик открыл панель")
 	check_string(stub.formspecs[#stub.formspecs].formspec)
 
 	local gift_entity = entities()[2]
 	local carry_before = gift_entity._brain.carry.food or 0
 	player.wielded = stub.new_stack("default:apple", 2)
-	local gift_answer = def.on_right_click(gift_entity, player)
+	local gift_answer = def.on_rightclick(gift_entity, player)
 	check(gift_answer ~= nil, "правый клик с едой обработан")
 	check((gift_entity._brain.carry.food or 0) > carry_before, "еда принята")
 end)
@@ -410,6 +419,8 @@ run("удар запоминается", function()
 	check(brain.stress > 0, "стресс вырос")
 	local rel = brain.memory.relationships["player:Тестер"]
 	check(rel and rel.fear > 0, "страх перед обидчиком")
+	local spec = stub.particlespawners[#stub.particlespawners]
+	check(spec and type(spec.glow) == "number", "glow частиц — число")
 	local avoid = false
 	for _, desire in ipairs(brain.desires) do
 		if desire.action == "avoid" then avoid = true end

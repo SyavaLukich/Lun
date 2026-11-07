@@ -363,9 +363,16 @@ ACTIONS.play = {
 		brain.activity = "play"
 		W.animate(entity, "run", 35)
 		if math.random() < dtime * 0.9 then
-			local velocity = entity.object:getvelocity()
-			if math.abs(velocity.y) < 0.5 then
-				entity.object:setvelocity({ x = (math.random() - 0.5) * 2, y = 4.3, z = (math.random() - 0.5) * 2 })
+			local pos = entity.object:get_pos()
+			local velocity = W.get_velocity(entity.object)
+			-- Прыгать можно только с настоящей опоры: иначе на вершине
+			-- прыжка скорость близка к нулю и житель улетает в небо.
+			if W.is_grounded(pos) and math.abs(velocity.y) < 0.5 then
+				W.set_velocity(entity.object, {
+					x = (math.random() - 0.5) * 2,
+					y = 4.3,
+					z = (math.random() - 0.5) * 2,
+				})
 			end
 			W.particles(entity.object:get_pos(), "npc_heart.png", 3, 0.5, 1.8)
 		end

@@ -539,7 +539,7 @@ minetest.register_entity("smart_npc:npc", {
 		smart_npc.call_hook("attack", self, self._brain, puncher, damage)
 	end,
 
-	on_right_click = function(self, clicker)
+	on_rightclick = function(self, clicker)
 		if not clicker or not clicker:is_player() or not self._brain then return end
 		local stack = clicker:get_wielded_item()
 		if stack and not stack:is_empty() and smart_npc.is_food_item(stack:get_name()) then

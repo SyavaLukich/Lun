@@ -11,6 +11,7 @@ stub.players = {}
 stub.entities = {}
 stub.objects = {}
 stub.particles = 0
+stub.particlespawners = {}
 stub.sounds = 0
 stub.logs = {}
 stub.messages = {}
@@ -151,6 +152,8 @@ local function make_object(luaentity)
 	function object:set_pos(pos) self.pos = copy_pos(pos) end
 	function object:getvelocity() return copy_pos(self.velocity) end
 	function object:setvelocity(vel) self.velocity = copy_pos(vel) end
+	function object:get_velocity() return copy_pos(self.velocity) end
+	function object:set_velocity(vel) self.velocity = copy_pos(vel) end
 	function object:get_yaw() return self.yaw end
 	function object:set_yaw(yaw) self.yaw = yaw end
 	function object:set_animation(frames, speed, blend)
@@ -337,6 +340,7 @@ end
 
 function mt.add_particlespawner(spec)
 	stub.particles = stub.particles + 1
+	stub.particlespawners[#stub.particlespawners + 1] = spec
 	return stub.particles
 end
 
