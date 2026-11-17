@@ -607,6 +607,43 @@ run("подъём на ступеньку", function()
 	W.stop(entity)
 end)
 
+run("не прыгает на ровном месте", function()
+	local entity = first_entity()
+	local old_pos = entity.object:get_pos()
+	entity.object:set_pos({ x = 10.5, y = 1, z = 10.5 })
+	entity.object:set_velocity({ x = 0, y = 0, z = 0 })
+	entity._path = nil
+	entity._stuck_time = 0
+	entity._jump_cooldown = nil
+	local result = W.move_to(entity, { x = 12.5, y = 1, z = 10.5 }, 0.2, 1.9, 0.75)
+	local velocity = entity.object:get_velocity()
+	check(result == "moving", "житель идёт к ровной цели")
+	check((velocity.y or 0) <= 0.1, "на ровном месте житель не прыгает")
+	entity.object:set_pos(old_pos)
+	entity.object:set_velocity({ x = 0, y = 0, z = 0 })
+	W.stop(entity)
+end)
+
+run("не прыгает в двухблочную стену", function()
+	local entity = first_entity()
+	local old_pos = entity.object:get_pos()
+	entity.object:set_pos({ x = 10.5, y = 1, z = 10.5 })
+	entity.object:set_velocity({ x = 0, y = 0, z = 0 })
+	entity._path = nil
+	entity._stuck_time = 0
+	entity._jump_cooldown = nil
+	stub.set_node(11, 1, 10, "default:stone")
+	stub.set_node(11, 2, 10, "default:stone")
+	W.move_to(entity, { x = 12.5, y = 1, z = 10.5 }, 0.2, 1.9, 0.75)
+	local velocity = entity.object:get_velocity()
+	check((velocity.y or 0) <= 0.1, "через два блока житель не прыгает")
+	stub.set_node(11, 1, 10, "air")
+	stub.set_node(11, 2, 10, "air")
+	entity.object:set_pos(old_pos)
+	entity.object:set_velocity({ x = 0, y = 0, z = 0 })
+	W.stop(entity)
+end)
+
 run("сон восстанавливает силы", function()
 	local entity = first_entity()
 	local brain = entity._brain

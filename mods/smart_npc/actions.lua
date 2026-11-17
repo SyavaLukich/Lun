@@ -360,9 +360,12 @@ ACTIONS.play = {
 		end
 
 		a.timer = (a.timer or 0) + dtime
+		a.jump_timer = (a.jump_timer or 0) + dtime
 		brain.activity = "play"
 		W.animate(entity, "run", 35)
-		if math.random() < dtime * 0.9 then
+		-- Во время игры прыгаем не каждый кадр, а раз в пару секунд.
+		if a.jump_timer > 2.2 then
+			a.jump_timer = 0
 			local pos = entity.object:get_pos()
 			local velocity = W.get_velocity(entity.object)
 			-- Прыгать можно только с настоящей опоры: иначе на вершине

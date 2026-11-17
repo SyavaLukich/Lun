@@ -995,32 +995,45 @@ local function sidestep_point(pos, dirx, dirz, sign)
 	return nil
 end
 
--- Несколько точек перед жителем: одна точка иногда попадает в щель между
--- блоками, и тогда он не понимает, что перед ним ступенька.
-local function probe_solid(pos, dirx, dirz, distance, height)
-	return W.is_solid({
-		x = pos.x + dirx * distance,
-		y = pos.y + height,
-		z = pos.z + dirz * distance,
-	})
-end
-
 -- Куда нужно встать, чтобы оказаться на вершине одной ступеньки. Это
 -- аварийный «подъём» после того, как обычный прыжок несколько раз не вышел.
 local function climb_point(pos, dirx, dirz)
-	local by = floor(pos.y)
+	-- Опора может быть не на целой высоте (плита, ступенька), поэтому
+	-- отсчитываем клетку шага от блока под ногами, а не от pos.y напрямую.
+	local ground_y = floor(pos.y - 0.1)
+	local step_y = ground_y + 1
 	for distance = 0.55, 1.25, 0.2 do
 		local x = floor(pos.x + dirx * distance)
 		local z = floor(pos.z + dirz * distance)
-		local step = { x = x, y = by, z = z }
+		local step = { x = x, y = step_y, z = z }
 		if W.is_solid(step)
-			and W.is_air({ x = x, y = by + 1, z = z })
-			and W.is_air({ x = x, y = by + 2, z = z })
+			and W.is_air({ x = x, y = step_y + 1, z = z })
+			and W.is_air({ x = x, y = step_y + 2, z = z })
 			and W.is_walkable_name(W.node_at(step).name) then
-			return { x = x + 0.5, y = by + 1, z = z + 0.5 }
+			return { x = x + 0.5, y = step_y + 1, z = z + 0.5 }
 		end
 	end
 	return nil
+end
+
+-- Проверяем именно ступеньку впереди, а не «цель выше нас». Иначе житель
+-- прыгает на каждом шаге к любой точке с большим y. Низкая опора
+-- отсчитывается от блока под ногами, чтобы плиты не считались стеной.
+local function jumpable_step(pos, dirx, dirz)
+	local ground_y = floor(pos.y - 0.1)
+	local step_y = ground_y + 1
+	local function solid(distance, height)
+		return W.is_solid({
+			x = pos.x + dirx * distance,
+			y = step_y + height,
+			z = pos.z + dirz * distance,
+		})
+	end
+	local low = solid(0.5, 0.2) or solid(0.75, 0.35) or solid(0.95, 0.2)
+	local head = solid(0.55, 1.15) or solid(0.8, 1.2)
+	local clear_top = not solid(0.55, 1.8) and not solid(0.55, 2.05)
+	-- Чтобы забраться на ступеньку, над ней должно быть место для тела.
+	return low and not head and clear_top
 end
 
 -- Двигает существо к точке. Возвращает "moving", "arrived" или "blocked".
@@ -1110,22 +1123,18 @@ function W.move_to(entity, target, dt, speed, radius)
 		end
 	end
 
-	-- Прыжок через ступеньку или наверх. Проверяем несколько точек, чтобы
-	-- не пропустить блок на краю диагонали, и не прыгаем в двухблочную
-	-- стену: её всё равно не перепрыгнуть, лучше сразу обойти.
+	-- Прыжок только через настоящую ступеньку впереди. Проверяем несколько
+	-- точек, чтобы не пропустить блок на краю диагонали, и не прыгаем в
+	-- двухблочную стену: её всё равно не перепрыгнуть, лучше сразу обойти.
 	local velocity = W.get_velocity(obj)
-	local low = probe_solid(pos, steerx, steerz, 0.5, 0.2)
-		or probe_solid(pos, steerx, steerz, 0.75, 0.35)
-		or probe_solid(pos, steerx, steerz, 0.95, 0.2)
-	local head = probe_solid(pos, steerx, steerz, 0.55, 1.15)
-		or probe_solid(pos, steerx, steerz, 0.8, 1.2)
-	local clear_top = not probe_solid(pos, steerx, steerz, 0.55, 1.8)
-	local needs_jump = (low and (not head or clear_top)) or dy > 0.8
+	local can_jump = jumpable_step(pos, steerx, steerz)
+	local jump_ready = now >= (entity._jump_cooldown or 0)
 	local grounded = W.is_grounded(pos)
 	local on_ground = grounded and math.abs(velocity.y) < 2.0
 
-	if needs_jump and on_ground then
+	if can_jump and jump_ready and on_ground then
 		W.set_velocity(obj, { x = steerx * speed, y = 5.2, z = steerz * speed })
+		entity._jump_cooldown = now + 0.6
 	elseif grounded and velocity.y <= 0.6 then
 		-- Не накапливаем скорость падения, пока стоим на опоре.
 		W.set_velocity(obj, { x = steerx * speed, y = 0, z = steerz * speed })
@@ -1146,8 +1155,13 @@ function W.move_to(entity, target, dt, speed, radius)
 	end
 	entity._last_move_pos = U.vector_copy(pos)
 
-	if (entity._stuck_time or 0) > 1.2 and on_ground then
+	-- Если застряли, прыжок помогает только перед настоящей ступенькой.
+	-- Об двухблочную стену или ствол прыгать бессмысленно — там работает
+	-- боковой обход. Пауза не даёт прыгать по десять раз в секунду.
+	if (entity._stuck_time or 0) > 1.2 and on_ground and can_jump
+		and now >= (entity._jump_cooldown or 0) then
 		W.set_velocity(obj, { x = steerx * speed, y = 5.2, z = steerz * speed })
+		entity._jump_cooldown = now + 0.6
 	end
 
 	-- Если прыжок несколько раз подряд не помог, аккуратно ставим жителя
