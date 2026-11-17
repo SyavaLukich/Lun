@@ -1,0 +1,28 @@
+# Настройки мода smart_npc.
+# Значения по умолчанию заданы здесь; их можно переопределить в minetest.conf.
+
+[Умные NPC]
+
+smart_npc.autospawn (Создавать жителей при входе в мир)
+	bool true
+
+smart_npc.spawn_count (Сколько жителей создавать автоматически)
+	int 2 1 10
+
+smart_npc.max_npcs (Максимум одновременно живущих NPC)
+	int 40 1 200
+
+smart_npc.need_decay_scale (Скорость изменения потребностей)
+	float 1.0 0.1 10.0
+
+smart_npc.gift_cooldown (Пауза между подарками одному жителю, сек)
+	float 2.0 0.0 60.0
+
+smart_npc.chat_lines (Комментировать события в чате)
+	bool true
+
+smart_npc.auto_reply (NPC отвечают на сообщения игроков рядом)
+	bool true
+
+smart_npc.debug (Подробный отладочный вывод)
+	bool false
