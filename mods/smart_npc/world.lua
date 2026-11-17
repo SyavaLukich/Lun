@@ -723,7 +723,11 @@ function W.escape_solid(entity, prefer)
 	entity._path = nil
 	entity._stuck_time = 0
 	entity._detour = nil
+	entity._detour_until = nil
 	entity._last_move_pos = nil
+	entity._no_progress = nil
+	entity._progress_key = nil
+	entity._progress_distance = nil
 	return true
 end
 
@@ -945,6 +949,9 @@ function W.stop(entity)
 	entity._detour = nil
 	entity._detour_until = nil
 	entity._last_move_pos = nil
+	entity._no_progress = nil
+	entity._progress_key = nil
+	entity._progress_distance = nil
 end
 
 function W.face(entity, pos)
@@ -956,6 +963,16 @@ function W.face(entity, pos)
 	local yaw = minetest.dir_to_yaw and minetest.dir_to_yaw({ x = dx, y = 0, z = dz })
 		or (math.atan2 and math.atan2(dx, dz)) or math.atan(dx, dz)
 	entity.object:set_yaw(yaw)
+end
+
+-- Точки пути в Luanti — координаты блоков. Для ходьбы нужен центр блока:
+-- иначе житель целится в угол и цепляется за соседнюю стену.
+local function path_point_center(point)
+	if not point then return nil end
+	if point.x == floor(point.x) and point.z == floor(point.z) then
+		return { x = point.x + 0.5, y = point.y, z = point.z + 0.5 }
+	end
+	return point
 end
 
 local function path_to(entity, target, now)
@@ -974,10 +991,17 @@ local function path_to(entity, target, now)
 		goal = U.vector_copy(target),
 		path = path,
 		index = 2,
-		expires = now + 4,
+		-- Неудачный поиск не кэшируем надолго: иначе житель несколько
+		-- секунд идёт напрямик в стену, не пытаясь найти обход.
+		expires = now + (path and 4 or 0.6),
 	}
 	entity._path = cache
 	return cache
+end
+
+local function wall_ahead(pos, dirx, dirz)
+	return W.is_solid({ x = pos.x + dirx * 0.55, y = pos.y + 0.2, z = pos.z + dirz * 0.55 })
+		and W.is_solid({ x = pos.x + dirx * 0.55, y = pos.y + 1.15, z = pos.z + dirz * 0.55 })
 end
 
 -- Свободная точка сбоку от препятствия: шаг в сторону, а не бесконечный
@@ -1069,6 +1093,10 @@ function W.move_to(entity, target, dt, speed, radius)
 		W.brake(entity)
 		entity._stuck_time = 0
 		entity._detour = nil
+		entity._detour_until = nil
+		entity._no_progress = nil
+		entity._progress_key = nil
+		entity._progress_distance = nil
 		return "arrived"
 	end
 
@@ -1082,12 +1110,13 @@ function W.move_to(entity, target, dt, speed, radius)
 	if cache and cache.path and #cache.path >= 2 then
 		local index = math.max(2, math.min(cache.index or 2, #cache.path))
 		local point = cache.path[index]
-		if point and U.horizontal_distance(pos, point) < 0.8 and math.abs(pos.y - point.y) < 0.95 then
+		if point and U.horizontal_distance(pos, path_point_center(point) or point) < 0.8
+			and math.abs(pos.y - point.y) < 0.95 then
 			index = math.min(index + 1, #cache.path)
 			cache.index = index
 			point = cache.path[index]
 		end
-		if point then waypoint = point end
+		if point then waypoint = path_point_center(point) or point end
 	end
 
 	dx, dz = waypoint.x - pos.x, waypoint.z - pos.z
@@ -1098,9 +1127,16 @@ function W.move_to(entity, target, dt, speed, radius)
 	end
 	local dirx, dirz = dx / length, dz / length
 	local steerx, steerz = dirx, dirz
+	local blocked_ahead = wall_ahead(pos, dirx, dirz)
+
+	-- Если прямо по курсу двухблочная стена, не ждём несколько секунд:
+	-- сразу готовим боковой обход (на следующем шаге).
+	if blocked_ahead and (not entity._detour or now > (entity._detour_until or 0)) then
+		entity._stuck_time = math.max(entity._stuck_time or 0, 0.95)
+	end
 
 	-- Если житель упёрся и прыжок не помогает, обходим препятствие боком.
-	if (entity._stuck_time or 0) > 0.9 and distance > 1.2 then
+	if (entity._stuck_time or 0) > 0.9 and (distance > 1.2 or blocked_ahead) then
 		if not entity._detour or now > (entity._detour_until or 0) then
 			local side = (entity._detour_side == 1) and -1 or 1
 			entity._detour_side = side
@@ -1144,10 +1180,34 @@ function W.move_to(entity, target, dt, speed, radius)
 
 	W.face(entity, waypoint)
 
-	-- Застревание: пытаемся прыгнуть, затем сдаёмся.
+	-- Застревание считаем не только по полной остановке: житель может
+	-- скользить вдоль стены, почти не приближаясь к цели. Если расстояние
+	-- до текущей точки пути не уменьшается, это тоже застревание.
+	local waypoint_distance = U.horizontal_distance(pos, waypoint)
+	local waypoint_key = string.format("%.2f:%.2f:%.2f", waypoint.x, waypoint.y or pos.y, waypoint.z)
+	local no_progress = entity._no_progress or 0
+	if entity._progress_key == waypoint_key and entity._progress_distance then
+		if waypoint_distance > entity._progress_distance - 0.02 then
+			no_progress = no_progress + dt
+		else
+			no_progress = 0
+		end
+	else
+		no_progress = 0
+	end
+	if entity._detour and now < (entity._detour_until or 0) then
+		-- Во время обхода расстояние может временно расти — это нормально.
+		no_progress = 0
+	end
+	entity._progress_key = waypoint_key
+	entity._progress_distance = waypoint_distance
+	entity._no_progress = no_progress
+
+	local detour_active = entity._detour and now < (entity._detour_until or 0)
 	if entity._last_move_pos then
 		local moved = U.distance(pos, entity._last_move_pos)
-		if moved < 0.012 and distance > 1.2 then
+		if (moved < 0.012 or no_progress > 0.75 or (blocked_ahead and not detour_active))
+			and (distance > 1.2 or blocked_ahead) then
 			entity._stuck_time = (entity._stuck_time or 0) + dt
 		else
 			entity._stuck_time = 0
@@ -1179,7 +1239,8 @@ function W.move_to(entity, target, dt, speed, radius)
 			return "moving"
 		end
 	end
-	if (entity._stuck_time or 0) > 4.5 then
+	local blocked_limit = (blocked_ahead and not detour_active) and 2.4 or 3.6
+	if (entity._stuck_time or 0) > blocked_limit then
 		W.brake(entity)
 		entity._path = nil
 		entity._detour = nil

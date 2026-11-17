@@ -267,8 +267,11 @@ end
 
 ACTIONS.talk = {
 	start = function(entity, brain, a, now, ctx)
-		local target = a.target and W.resolve_target(brain, a.target, ctx) or nil
-		if target and too_fearful(brain, target.key) then target = nil end
+		local requested = a.target
+		local target = requested and W.resolve_target(brain, requested, ctx) or nil
+		-- Если жителя позвали к конкретному обидчику, он не должен вместо
+		-- этого уходить болтать с кем-то другим.
+		if requested and (not target or too_fearful(brain, target.key)) then return nil end
 		if not target then
 			target = W.nearest_social(ctx, nil, 24)
 			if target and too_fearful(brain, target.key) then target = nil end
