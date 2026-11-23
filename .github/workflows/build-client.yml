@@ -1,0 +1,81 @@
+name: Build patched Luanti client
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'client/**'
+      - '.github/workflows/build-client.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows x64
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get Luanti 5.18.0
+        run: |
+          git clone --depth 1 --branch 5.18.0 https://github.com/luanti-org/luanti.git luanti-source
+
+      - name: Apply camera patch
+        run: |
+          git -C luanti-source apply "$GITHUB_WORKSPACE/client/luanti-5.18.0-camera-collision.patch"
+
+      - name: Install MinGW toolchain
+        run: |
+          cd luanti-source
+          source ./util/ci/common.sh
+          install_mingw_deps 64 true
+          sudo ./util/buildbot/download_toolchain.sh /usr
+
+      - name: Build
+        run: |
+          cd luanti-source
+          EXISTING_MINETEST_DIR="$PWD" ./util/buildbot/buildwin64.sh B
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: luanti-windows-x64
+          path: luanti-source/B/build/*.zip
+          if-no-files-found: error
+
+  android:
+    name: Android
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get Luanti 5.18.0
+        run: |
+          git clone --depth 1 --branch 5.18.0 https://github.com/luanti-org/luanti.git luanti-source
+
+      - name: Apply camera patch
+        run: |
+          git -C luanti-source apply "$GITHUB_WORKSPACE/client/luanti-5.18.0-camera-collision.patch"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install gettext
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gettext
+
+      - name: Build debug APK
+        run: |
+          cd luanti-source/android
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: luanti-android-debug-apk
+          path: luanti-source/android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
