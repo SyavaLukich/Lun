@@ -18,7 +18,9 @@ local EPSILON        = 0.01        -- порог остановки
 -- вверх. При взгляде вперёд локальная +X находится слева, поэтому
 -- -5 даёт смещение вправо.
 local OFFSET_THIRD      = vector.new(-5, 2, 0)
-local OFFSET_THIRD_HEAD = vector.new(0, -2, 0)
+-- z = +5 (0,5 блока вперёд) компенсирует отвод камеры движком в
+-- третьем лице и не даёт ей так глубоко уходить в заднюю стену.
+local OFFSET_THIRD_HEAD = vector.new(0, -2, 5)
 local EYE_ZERO          = vector.zero()
 local OFFSET_SCALE      = 0.1       -- десятые доли блока -> блоки
 
