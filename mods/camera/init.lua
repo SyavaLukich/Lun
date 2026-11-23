@@ -53,24 +53,12 @@ local function ray_blocked(from, to)
     return false
 end
 
-local function get_third_eye_offset(player)
-    -- state хранит текущее значение анимации: именно его мы передали в
-    -- set_eye_offset() и именно от него движок строит камеру.
-    local state = states[player:get_player_name()]
-    if state and state.current_offset then
-        return state.current_offset
-    end
-
-    if player.get_eye_offset then
-        local first, third = player:get_eye_offset()
-        -- На случай форков/версий, где возвращается таблица с полями.
-        if type(first) == "table" and not first.x then
-            third = first.thirdperson_back or first.third or third
-        end
-        if type(third) == "table" and third.x and third.y and third.z then
-            return third
-        end
-    end
+local function get_probe_eye_offset()
+    -- Проверяем всегда свободный вариант (плечо), а не текущее анимированное
+    -- смещение. Иначе луч сам двигает камеру: в тесноте смещение уходит к
+    -- OFFSET_THIRD_HEAD, луч начинает проходить, камера возвращается к
+    -- OFFSET_THIRD — и так бесконечно. Плечо — та точка, где камера будет,
+    -- если считать помещение просторным, поэтому проверять нужно именно её.
     return OFFSET_THIRD
 end
 
@@ -114,7 +102,7 @@ local function camera_ray_points(player)
         return nil
     end
 
-    local offset = get_third_eye_offset(player)
+    local offset = get_probe_eye_offset()
     local ox = offset.x or 0
     local oy = offset.y or 0
     local oz = offset.z or 0
