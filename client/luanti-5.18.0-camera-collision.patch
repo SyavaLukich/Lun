@@ -1,0 +1,76 @@
+diff --git a/src/client/camera.cpp b/src/client/camera.cpp
+index a1b9848..befe5e8 100644
+--- a/src/client/camera.cpp
++++ b/src/client/camera.cpp
+@@ -418,34 +418,49 @@ void Camera::update(LocalPlayer* player, f32 frametime, f32 tool_reload_ratio)
+ 		if (m_camera_mode == CAMERA_MODE_THIRD_FRONT)
+ 			m_camera_direction *= -1;
+ 
+-		my_cp.Y += 2;
+-
+-		// Calculate new position
+-		bool abort = false;
+-		for (int i = BS; i <= BS * 2.75; i++) {
+-			my_cp.X = m_camera_position.X + m_camera_direction.X * -i;
+-			my_cp.Z = m_camera_position.Z + m_camera_direction.Z * -i;
+-			if (i > 12)
+-				my_cp.Y = m_camera_position.Y + (m_camera_direction.Y * -i);
+-
+-			// Prevent camera positioned inside nodes
+-			const NodeDefManager *nodemgr = m_client->ndef();
++		// Keep the camera in front of the first walkable node behind the head.
++		// The old code checked only every whole block and then jumped 0.5 blocks
++		// towards the player, which could leave the camera inside a wall in tight
++		// spaces. Sample a continuous path instead and stop just before the wall.
++		const f32 max_dist = BS * 2.75f;
++		const f32 step = 0.05f * BS;
++		const f32 near_margin = 0.15f * BS;
++		const NodeDefManager *nodemgr = m_client->ndef();
++		bool blocked = false;
++		f32 safe_dist = 0.0f;
++
++		for (f32 d = 0.0f; d <= max_dist; d += step) {
++			my_cp = m_camera_position;
++			my_cp.X += m_camera_direction.X * -d;
++			my_cp.Z += m_camera_direction.Z * -d;
++			my_cp.Y += 2.0f;
++			if (d > 12.0f)
++				my_cp.Y = m_camera_position.Y + (m_camera_direction.Y * -d);
++
+ 			MapNode n = m_client->getEnv().getClientMap()
+ 				.getNode(floatToInt(my_cp, BS));
+-
+-			const ContentFeatures& features = nodemgr->get(n);
+-			if (features.walkable) {
+-				my_cp.X += m_camera_direction.X*-1*-BS/2;
+-				my_cp.Z += m_camera_direction.Z*-1*-BS/2;
+-				my_cp.Y += m_camera_direction.Y*-1*-BS/2;
+-				abort = true;
++			if (nodemgr->get(n).walkable) {
++				blocked = true;
+ 				break;
+ 			}
++			safe_dist = d;
+ 		}
+ 
+-		// If node blocks camera position don't move y to height
+-		if (abort && my_cp.Y > player_position.Y+BS*2)
+-			my_cp.Y = player_position.Y+BS*2;
++		if (!blocked)
++			safe_dist = max_dist;
++		else
++			safe_dist = std::max(0.0f, safe_dist - near_margin);
++
++		my_cp = m_camera_position;
++		my_cp.X += m_camera_direction.X * -safe_dist;
++		my_cp.Z += m_camera_direction.Z * -safe_dist;
++		my_cp.Y += 2.0f;
++		if (safe_dist > 12.0f)
++			my_cp.Y = m_camera_position.Y + (m_camera_direction.Y * -safe_dist);
++
++		// If a node blocks the camera position, don't move y to height.
++		if (blocked && my_cp.Y > player_position.Y + BS * 2)
++			my_cp.Y = player_position.Y + BS * 2;
+ 
+ 		// update the camera position in third-person mode to render blocks behind player
+ 		// and correctly apply liquid post FX.

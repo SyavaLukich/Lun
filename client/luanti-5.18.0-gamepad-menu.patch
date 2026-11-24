@@ -1,0 +1,112 @@
+diff --git a/src/client/inputhandler.cpp b/src/client/inputhandler.cpp
+index 0f86e1e..a1acfa2 100644
+--- a/src/client/inputhandler.cpp
++++ b/src/client/inputhandler.cpp
+@@ -121,6 +121,80 @@ void MyEventReceiver::reloadKeybindings()
+ 
+ }
+ 
++
++void MyEventReceiver::sendMenuKey(EKEY_CODE key, bool shift)
++{
++	IrrlichtDevice *device = RenderingEngine::get_raw_device();
++	if (!device)
++		return;
++
++	SEvent event;
++	event.EventType = EET_KEY_INPUT_EVENT;
++	event.KeyInput.Key = key;
++	event.KeyInput.SystemKeyCode = 0;
++	event.KeyInput.Char = 0;
++	event.KeyInput.Shift = shift;
++	event.KeyInput.Control = false;
++
++	// Buttons in Irrlicht are activated on key release, so send both edges.
++	event.KeyInput.PressedDown = true;
++	device->postEventFromUser(event);
++	event.KeyInput.PressedDown = false;
++	device->postEventFromUser(event);
++}
++
++bool MyEventReceiver::handleMenuGamepad(const SEvent &event)
++{
++	if (event.EventType == EET_GAMEPAD_BUTTON_EVENT) {
++		if (!event.GamepadButtonEvent.PressedDown)
++			return false;
++
++		switch (event.GamepadButtonEvent.Button) {
++		case GamepadButton::SOUTH: // A / Cross
++			sendMenuKey(KEY_RETURN);
++			return true;
++		case GamepadButton::EAST: // B / Circle
++		case GamepadButton::BACK:
++			sendMenuKey(KEY_ESCAPE);
++			return true;
++		case GamepadButton::DPAD_UP:
++		case GamepadButton::DPAD_LEFT:
++		case GamepadButton::LEFT_SHOULDER:
++			sendMenuKey(KEY_TAB, true);
++			return true;
++		case GamepadButton::DPAD_DOWN:
++		case GamepadButton::DPAD_RIGHT:
++		case GamepadButton::RIGHT_SHOULDER:
++			sendMenuKey(KEY_TAB, false);
++			return true;
++		default:
++			return false;
++		}
++	}
++
++	if (event.EventType == EET_GAMEPAD_AXIS_EVENT) {
++		auto axis = event.GamepadAxisEvent.Axis;
++		if (axis != GamepadAxis::LEFTX && axis != GamepadAxis::LEFTY)
++			return false;
++
++		// One focus step per deflection. Axis values are in [-32768, 32767].
++		constexpr s16 threshold = 16000;
++		int dir = (event.GamepadAxisEvent.Value > threshold) -
++				(event.GamepadAxisEvent.Value < -threshold);
++		int axis_idx = static_cast<int>(axis);
++		if (axis_idx < 0 || axis_idx >= (int)ARRLEN(menu_axis_dir))
++			return false;
++		if (menu_axis_dir[axis_idx] == dir)
++			return true;
++		menu_axis_dir[axis_idx] = dir;
++		if (dir != 0)
++			sendMenuKey(KEY_TAB, dir < 0);
++		return true;
++	}
++
++	return false;
++}
++
+ bool MyEventReceiver::WasKeyDown(GameKeyType key)
+ {
+ 	bool b = keyWasDown[key];
+@@ -265,7 +339,9 @@ bool MyEventReceiver::OnEvent(const SEvent &event)
+ 		if (g_touchcontrols)
+ 			g_touchcontrols->setVisible(false);
+ 		// Let the menu handle events, if one is active.
+-		return ret;
++		if (ret)
++			return true;
++		return handleMenuGamepad(event);
+ 	}
+ 
+ 	// Remember whether each key is down or up
+diff --git a/src/client/inputhandler.h b/src/client/inputhandler.h
+index e3972f9..cb97e58 100644
+--- a/src/client/inputhandler.h
++++ b/src/client/inputhandler.h
+@@ -113,6 +113,11 @@ class MyEventReceiver : public IEventReceiver
+ 	void setKeyDown(GameKeyType action, std::pair<float, bool> new_state);
+ 	std::pair<float, bool> checkKeyDown(GameKeyType action) const;
+ 
++	// Translate gamepad input into keyboard events while a menu is open.
++	bool handleMenuGamepad(const SEvent &event);
++	void sendMenuKey(EKEY_CODE key, bool shift = false);
++	int menu_axis_dir[2] = {0, 0};
++
+ 	struct Keybinding {
+ 		std::vector<KeyPress> keys;
+ 		struct {
