@@ -21,9 +21,11 @@ jobs:
         run: |
           git clone --depth 1 --branch 5.18.0 https://github.com/luanti-org/luanti.git luanti-source
 
-      - name: Apply camera patch
+      - name: Apply client patches
         run: |
-          git -C luanti-source apply "$GITHUB_WORKSPACE/client/luanti-5.18.0-camera-collision.patch"
+          git -C luanti-source apply \
+            "$GITHUB_WORKSPACE/client/luanti-5.18.0-camera-collision.patch" \
+            "$GITHUB_WORKSPACE/client/luanti-5.18.0-gamepad-menu.patch"
 
       - name: Install MinGW toolchain
         run: |
@@ -53,9 +55,11 @@ jobs:
         run: |
           git clone --depth 1 --branch 5.18.0 https://github.com/luanti-org/luanti.git luanti-source
 
-      - name: Apply camera patch
+      - name: Apply client patches
         run: |
-          git -C luanti-source apply "$GITHUB_WORKSPACE/client/luanti-5.18.0-camera-collision.patch"
+          git -C luanti-source apply \
+            "$GITHUB_WORKSPACE/client/luanti-5.18.0-camera-collision.patch" \
+            "$GITHUB_WORKSPACE/client/luanti-5.18.0-gamepad-menu.patch"
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -97,7 +101,8 @@ jobs:
           tag_name: client-5.18.0-${{ github.run_number }}
           name: Patched Luanti 5.18.0 client
           body: |
-            Luanti 5.18.0 with the third-person camera collision patch.
+            Luanti 5.18.0 with the third-person camera collision patch and
+            gamepad navigation in menus.
             Server and game files are not included.
           files: |
             artifacts/**/*.zip
