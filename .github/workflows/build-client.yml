@@ -8,7 +8,7 @@ on:
       - '.github/workflows/build-client.yml'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   windows:
@@ -79,3 +79,27 @@ jobs:
           name: luanti-android-debug-apk
           path: luanti-source/android/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+
+  release:
+    name: Publish release assets
+    needs: [windows, android]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: client-5.18.0-${{ github.run_number }}
+          name: Patched Luanti 5.18.0 client
+          body: |
+            Luanti 5.18.0 with the third-person camera collision patch.
+            Server and game files are not included.
+          files: |
+            artifacts/**/*.zip
+            artifacts/**/*.apk
+          fail_on_unmatched_files: true
