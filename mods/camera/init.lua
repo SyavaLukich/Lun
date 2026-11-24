@@ -1,165 +1,221 @@
--- Luanti 5.12+ / VoxeLibre: плавная анимация камеры между третьим лицом и "головой".
--- + отладочная визуализация лучей (/camera_debug)
-local core       = minetest
-local mcl_player = mcl_player
+-- Luanti 5.12+: камера за правым плечом с защитой от препятствий.
+local core = minetest
 
--- ============================ КОНФИГУРАЦИЯ ============================
-local CACHE_TTL_US   = 200000      -- 0.3 сек в микросекундах
-local BACK_DISTANCE  = -2
-local MIN_PROTOCOL   = 48
-local OPACITY        = 0.2
-local ALPHA_BYTE     = math.floor(OPACITY * 255)
+local MIN_PROTOCOL = 48
+local CAMERA_RAY_LENGTH = 2.75
+local CAMERA_LIFT = 0.2
+local OFFSET_SCALE = 0.1
+local OFFSET_THIRD = vector.new(-5, 2, 0)
+local OFFSET_NEAR = vector.new(0, -5, 10)
+local CAMERA_SPEED_IN = 50
+local CAMERA_SPEED_OUT = 15
+local EYE_ZERO = vector.zero()
 
-local CAMERA_SPEED   = 15.0        -- блоков в секунду
-local EPSILON        = 0.01        -- порог остановки
+-- Проверяем не только центральный луч, но и небольшой объём вокруг камеры.
+-- Возвращаемся к третьему лицу лишь после устойчивого свободного обзора.
+local CAMERA_RADIUS = 0.15
+local SAMPLE_STEP = 0.2
+local CLEAR_TIME = 0.35
+local probes = {
+    {x = 0, y = 0, z = 0},
+    {x = CAMERA_RADIUS, y = 0, z = 0},
+    {x = -CAMERA_RADIUS, y = 0, z = 0},
+    {x = 0, y = CAMERA_RADIUS, z = 0},
+    {x = 0, y = -CAMERA_RADIUS, z = 0},
+    {x = 0, y = 0, z = CAMERA_RADIUS},
+    {x = 0, y = 0, z = -CAMERA_RADIUS},
+}
 
-local OFFSET_THIRD      = vector.new(-5, 2, 0)
-local OFFSET_THIRD_HEAD = vector.new(0, -2, 0)
-local EYE_ZERO          = vector.zero()
+local states = {}
 
-local states        = {}
-local cramped_cache = {}
+local function node_is_solid(pos)
+    -- get_node_or_nil также обнаруживает ещё не загруженные участки.
+    local node = core.get_node_or_nil(pos)
+    if not node or node.name == "ignore" then
+        return true
+    end
+    local def = core.registered_nodes[node.name]
+    return not def or def.walkable == true
+end
 
--- ============================ RAYCAST ============================
-local function ray_blocked(pos, dir)
-    for pointed in core.raycast(pos, vector.add(pos, dir), false) do
+local function ray_blocked(from, to)
+    -- Выборка дополняет raycast: непоинтабельные узлы и начало луча
+    -- внутри блока не всегда возвращаются raycast. Считаем walkable-узел
+    -- целым блоком: это консервативно, зато камера не проходит сквозь него.
+    local dx, dy, dz = to.x - from.x, to.y - from.y, to.z - from.z
+    local length = math.sqrt(dx * dx + dy * dy + dz * dz)
+    local steps = math.max(1, math.ceil(length / SAMPLE_STEP))
+    for i = 0, steps do
+        local t = i / steps
+        if node_is_solid({x = from.x + dx * t, y = from.y + dy * t, z = from.z + dz * t}) then
+            return true
+        end
+    end
+
+    for pointed in core.raycast(from, to, false, false) do
         if pointed.type == "node" then
+            local pos = pointed.under or pointed.pos
+            if not pos or node_is_solid(pos) then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+local function volume_blocked(from, to)
+    for _, offset in ipairs(probes) do
+        local start = {x = from.x + offset.x, y = from.y + offset.y, z = from.z + offset.z}
+        local finish = {x = to.x + offset.x, y = to.y + offset.y, z = to.z + offset.z}
+        if ray_blocked(start, finish) then
             return true
         end
     end
     return false
 end
 
--- ============================ ОТЛАДКА ЛУЧЕЙ ============================
--- ============================ ОПРЕДЕЛЕНИЕ ТЕСНОТЫ ============================
-local function is_cramped(player)
-    local name   = player:get_player_name()
-    local cached = cramped_cache[name]
-    local now    = core.get_us_time()
-
-    if cached and (now - cached.time) < CACHE_TTL_US then
-        return cached.result or cached.result1 or cached.result2 or cached.result3 or cached.result4 or cached.result5
-    end
-
+local function camera_path(player)
     local pos = player:get_pos()
-    pos.y = pos.y + player:get_properties().eye_height
-
-    local backpos = vector.multiply(player:get_look_dir(),-3)
-	local camera_pos = vector.add(pos, player:get_eye_offset().thirdperson_back or vector.zero())
-	
-	
-    local result  = ray_blocked(camera_pos,     backpos)
-	
-    cramped_cache[name] = {result = result, result1 = result1, result2 = result2, result3 = result3, result4 = result4, result5 = result5, time = now }
-    return result or result1 or result2 or result3 or result4 or result5
-end
-
--- ============================ ПРОЗРАЧНОСТЬ ============================
-local function make_transparent(textures)
-    local result = {}
-    for i, tex in ipairs(textures) do
-        result[i] = tex .. "^[opacity:" .. ALPHA_BYTE
+    local look = player:get_look_dir()
+    if not pos or not look then
+        return nil
     end
-    return result
-end
+    local props = player:get_properties()
+    local eye = {x = pos.x, y = pos.y + ((props and props.eye_height) or 1.625), z = pos.z}
 
-local function set_textures(player, textures)
-    if mcl_player and mcl_player.player_set_textures then
-        mcl_player.player_set_textures(player, textures)
+    local len = math.sqrt(look.x * look.x + look.z * look.z)
+    local yaw
+    if len > 1e-6 then
+        yaw = core.dir_to_yaw({x = look.x / len, y = 0, z = look.z / len})
     else
-        -- fallback на случай отсутствия mcl_player
-        player:set_properties({ textures = textures })
+        yaw = (player.get_look_horizontal and player:get_look_horizontal()) or 0
     end
+    local forward = core.yaw_to_dir(yaw)
+    local left = core.yaw_to_dir(yaw - math.pi / 2)
+    local head = {
+        x = eye.x + (left.x * OFFSET_THIRD.x + forward.x * OFFSET_THIRD.z) * OFFSET_SCALE,
+        y = eye.y + OFFSET_THIRD.y * OFFSET_SCALE + CAMERA_LIFT,
+        z = eye.z + (left.z * OFFSET_THIRD.x + forward.z * OFFSET_THIRD.z) * OFFSET_SCALE,
+    }
+    local camera = {
+        x = head.x - look.x * CAMERA_RAY_LENGTH,
+        y = head.y - look.y * CAMERA_RAY_LENGTH,
+        z = head.z - look.z * CAMERA_RAY_LENGTH,
+    }
+    return eye, head, camera
 end
 
-local function get_original_textures(player)
-    if mcl_player and mcl_player.player_get_animation then
-        local anim = mcl_player.player_get_animation(player)
-        if anim and anim.textures then
-            return anim.textures
+local function is_cramped(player)
+    local eye, head, camera = camera_path(player)
+    if not eye then
+        return true
+    end
+    -- Проверяем и путь от глаз к плечу: иначе плечевое смещение способно
+    -- перенести начало луча за стену или внутрь неё.
+    return volume_blocked(eye, head) or volume_blocked(head, camera)
+end
+
+local function textures_equal(a, b)
+    if not a or not b or #a ~= #b then return false end
+    for i = 1, #a do
+        if a[i] ~= b[i] then return false end
+    end
+    return true
+end
+
+local function copy_textures(textures)
+    local copy = {}
+    for i, texture in ipairs(textures) do copy[i] = texture end
+    return copy
+end
+
+-- Не меняем состояние mcl_player: только визуальные свойства объекта.
+-- Если другой мод меняет скин в тесноте, новая текстура становится исходной.
+local function update_transparency(player, state)
+    local props = player:get_properties()
+    local textures = props and props.textures
+    if state.cramped then
+        if not textures or #textures == 0 then return end
+        if not textures_equal(textures, state.transparent_textures) then
+            state.original_textures = copy_textures(textures)
+            local transparent = {}
+            for i, texture in ipairs(textures) do
+                -- Скобки применяют opacity ко всей составной текстуре скина.
+                transparent[i] = "(" .. texture .. ")^[opacity:51"
+            end
+            if not state.transparent_textures then
+                state.original_alpha = props.use_texture_alpha
+            end
+            state.transparent_textures = transparent
+            player:set_properties({textures = transparent, use_texture_alpha = true})
         end
+    elseif state.transparent_textures then
+        local restore = {}
+        -- Не перезаписываем скин, который другой мод уже успел изменить.
+        if textures_equal(textures, state.transparent_textures) then
+            restore.textures = state.original_textures
+        end
+        if props and props.use_texture_alpha == true then
+            restore.use_texture_alpha = state.original_alpha or false
+        end
+        if next(restore) then player:set_properties(restore) end
+        state.original_textures = nil
+        state.transparent_textures = nil
+        state.original_alpha = nil
     end
-    return player:get_properties().textures
 end
 
-local function update_visibility(player, state, cramped)
-    if state.cramped == cramped then return end
-
-    if cramped then
-        -- Сохраняем актуальные текстуры через mcl_player (или fallback)
-        state.original_textures = get_original_textures(player)
-        set_textures(player, make_transparent(state.original_textures))
-        player:set_properties({ use_texture_alpha = true })
-    elseif state.original_textures then
-        set_textures(player, state.original_textures)
-        player:set_properties({ use_texture_alpha = false })
-        state.original_textures = nil
-    end
-
+local function set_cramped(state, cramped)
     state.cramped = cramped
 end
 
--- ============================ АНИМАЦИЯ КАМЕРЫ ============================
-local function animate_camera(player, state, cramped, dtime)
-    local target  = cramped and OFFSET_THIRD_HEAD or OFFSET_THIRD
-    local current = state.current_offset
-    if current == target then return end  -- уже на месте
-
-    local dx   = target.x - current.x
-    local dy   = target.y - current.y
-    local dz   = target.z - current.z
-    local dist = math.sqrt(dx * dx + dy * dy + dz * dz)
-    local step = CAMERA_SPEED * dtime
-
-    local next
-    if dist > EPSILON and step < dist then
-        local t = step / dist
-        next = {
-            x = current.x + dx * t,
-            y = current.y + dy * t,
-            z = current.z + dz * t,
-        }
-    else
-        next = target  -- дошли в этом кадре или уже близко
-    end
-
-    state.current_offset = next
-    player:set_eye_offset(EYE_ZERO, next, next)
+local function animate_camera(player, state, dtime)
+    local target = state.cramped and OFFSET_NEAR or OFFSET_THIRD
+    local current = state.offset
+    local dx, dy, dz = target.x - current.x, target.y - current.y, target.z - current.z
+    local distance = math.sqrt(dx * dx + dy * dy + dz * dz)
+    if distance < 0.001 then return end
+    local speed = state.cramped and CAMERA_SPEED_IN or CAMERA_SPEED_OUT
+    local t = math.min(1, speed * dtime / distance)
+    state.offset = {x = current.x + dx * t, y = current.y + dy * t, z = current.z + dz * t}
+    player:set_eye_offset(EYE_ZERO, state.offset, state.offset)
 end
 
--- ============================ РЕГИСТРАЦИЯ ============================
 core.register_on_joinplayer(function(player)
     local name = player:get_player_name()
     local info = core.get_player_information(name)
     if not player.set_camera or not player.set_eye_offset
-            or not info or info.protocol_version < MIN_PROTOCOL then
+            or not info or not info.protocol_version or info.protocol_version < MIN_PROTOCOL then
         core.kick_player(name, "Для камеры нужен клиент и сервер Luanti 5.12 или новее.")
         return
     end
 
-    states[name] = {
-        cramped           = false,
-        original_textures = nil,
-        current_offset    = OFFSET_THIRD,
-    }
-
-    player:set_camera({ mode = "third" })
-    player:set_eye_offset(EYE_ZERO, OFFSET_THIRD, OFFSET_THIRD)
+    -- До проверки начинаем с ближайшего положения, не меняя режим камеры.
+    states[name] = {cramped = false, clear_time = 0, offset = OFFSET_NEAR}
+    set_cramped(states[name], true)
+    player:set_eye_offset(EYE_ZERO, OFFSET_NEAR, OFFSET_NEAR)
+    player:set_camera({mode = "third"})
 end)
 
 core.register_on_leaveplayer(function(player)
-    local name = player:get_player_name()
-    states[name]        = nil
-    cramped_cache[name] = nil
+    states[player:get_player_name()] = nil
 end)
 
 core.register_globalstep(function(dtime)
     for _, player in ipairs(core.get_connected_players()) do
         local state = states[player:get_player_name()]
         if state then
-            local cramped = is_cramped(player)
-            update_visibility(player, state, cramped)
-            animate_camera(player, state, cramped, dtime)
+            if is_cramped(player) then
+                state.clear_time = 0
+                set_cramped(state, true)
+            elseif state.cramped then
+                state.clear_time = state.clear_time + dtime
+                if state.clear_time >= CLEAR_TIME then
+                    set_cramped(state, false)
+                end
+            end
+            update_transparency(player, state)
+            animate_camera(player, state, dtime)
         end
     end
 end)
