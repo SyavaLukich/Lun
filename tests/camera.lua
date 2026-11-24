@@ -43,32 +43,33 @@ callbacks.step(0.16)
 assert(player.offset.z < 10 and player.offset.z > 0, "return must be animated")
 callbacks.step(1)
 assert(math.abs(player.offset.z) < 0.001, "camera should return to shoulder")
-assert(player.textures[1] == "skin.png", "original texture must be restored")
+assert(player.textures == nil, "camera must not alter the skin")
 -- An unpointable solid block behind the player is still detected by sampling.
 nodes["-1,2,-2"] = "stone"
+player.textures = {"new_skin.png"}
 callbacks.step(0.02)
 assert(player.mode == "third" and player.offset.z > 0 and player.offset.z < 10,
     "blocked camera must move toward the player without changing mode")
-assert(player.textures[1] == "skin.png^[opacity:51")
+assert(player.textures[1] == "new_skin.png", "camera must not make the skin transparent")
 nodes["-1,2,-2"] = nil
 callbacks.step(0.2)
 nodes["-1,2,-2"] = "stone"
 callbacks.step(0.01)
 nodes["-1,2,-2"] = nil
 callbacks.step(0.2)
-assert(player.textures[1] == "skin.png^[opacity:51", "intermittent obstruction must reset the timer")
+assert(player.offset.z > 0, "intermittent obstruction must reset the timer")
 callbacks.step(0.16)
-assert(player.textures[1] == "skin.png")
+assert(player.textures[1] == "new_skin.png", "camera must not restore an outdated skin")
 -- A wall between the eyes and the shoulder must also be detected.
 nodes["-1,2,0"] = "stone"
 callbacks.step(0.01)
-assert(player.textures[1] == "skin.png^[opacity:51", "shoulder path must be checked")
+assert(player.offset.z > 0, "shoulder path must be checked")
 nodes["-1,2,0"] = "unloaded"
 callbacks.step(1)
-assert(player.textures[1] == "skin.png^[opacity:51", "unloaded nodes must be treated as solid")
+assert(player.offset.z == 10, "unloaded nodes must be treated as solid")
 nodes["-1,2,0"] = "glasslike"
 callbacks.step(0.36)
-assert(player.textures[1] == "skin.png", "non-walkable nodes must not block the camera")
+assert(player.offset.z < 10, "non-walkable nodes must not block the camera")
 for _, mode in ipairs(player.changes) do assert(mode == "third", "camera must always remain third person") end
 callbacks.leave(player)
 print("camera tests passed")

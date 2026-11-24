@@ -9,7 +9,6 @@ local OFFSET_THIRD = vector.new(-5, 2, 0)
 local OFFSET_NEAR = vector.new(0, -5, 10)
 local CAMERA_SPEED_IN = 50
 local CAMERA_SPEED_OUT = 15
-local mcl_player = mcl_player
 local EYE_ZERO = vector.zero()
 
 -- Проверяем не только центральный луч, но и небольшой объём вокруг камеры.
@@ -116,34 +115,10 @@ local function is_cramped(player)
     return volume_blocked(eye, head) or volume_blocked(head, camera)
 end
 
-local function set_textures(player, textures)
-    if mcl_player and mcl_player.player_set_textures then
-        mcl_player.player_set_textures(player, textures)
-    else
-        player:set_properties({textures = textures})
-    end
-end
-
-local function set_cramped(player, state, cramped)
-    if state.cramped == cramped then return end
+-- Внешний вид принадлежит модам игрока и скинов. Камера не сохраняет и
+-- не восстанавливает текстуры: скин может измениться даже во время движения.
+local function set_cramped(state, cramped)
     state.cramped = cramped
-    if cramped then
-        local props = player:get_properties()
-        state.original_textures = props.textures
-        state.original_alpha = props.use_texture_alpha
-        if state.original_textures then
-            local transparent = {}
-            for i, texture in ipairs(state.original_textures) do
-                transparent[i] = texture .. "^[opacity:51"
-            end
-            set_textures(player, transparent)
-            player:set_properties({use_texture_alpha = true})
-        end
-    elseif state.original_textures then
-        set_textures(player, state.original_textures)
-        player:set_properties({use_texture_alpha = state.original_alpha or false})
-        state.original_textures = nil
-    end
 end
 
 local function animate_camera(player, state, dtime)
@@ -169,7 +144,7 @@ core.register_on_joinplayer(function(player)
 
     -- До проверки начинаем с ближайшего положения, не меняя режим камеры.
     states[name] = {cramped = false, clear_time = 0, offset = OFFSET_NEAR}
-    set_cramped(player, states[name], true)
+    set_cramped(states[name], true)
     player:set_eye_offset(EYE_ZERO, OFFSET_NEAR, OFFSET_NEAR)
     player:set_camera({mode = "third"})
 end)
@@ -184,11 +159,11 @@ core.register_globalstep(function(dtime)
         if state then
             if is_cramped(player) then
                 state.clear_time = 0
-                set_cramped(player, state, true)
+                set_cramped(state, true)
             elseif state.cramped then
                 state.clear_time = state.clear_time + dtime
                 if state.clear_time >= CLEAR_TIME then
-                    set_cramped(player, state, false)
+                    set_cramped(state, false)
                 end
             end
             animate_camera(player, state, dtime)
